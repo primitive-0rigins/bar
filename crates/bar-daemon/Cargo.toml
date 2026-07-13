@@ -1,0 +1,18 @@
+[package]
+name = "bar-daemon"
+description = "The mandatory BAR daemon process (spec §5.1): loads configuration and structured logging, and starts model-free."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+bar-core.workspace = true
+bar-config.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true

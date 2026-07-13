@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/bar-core"]
+members = ["crates/bar-core", "crates/bar-config", "crates/bar-daemon"]
 
 [workspace.package]
 version = "0.0.0"
@@ -10,6 +10,15 @@ license = "MIT"
 authors = ["Bryce Worthy"]
 repository = "https://github.com/primitive-0rigins/bar"
 readme = "README.md"
+
+[workspace.dependencies]
+bar-core = { path = "crates/bar-core" }
+bar-config = { path = "crates/bar-config" }
+uuid = { version = "1", features = ["v4"] }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

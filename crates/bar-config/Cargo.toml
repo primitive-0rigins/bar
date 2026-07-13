@@ -1,6 +1,6 @@
 [package]
-name = "bar-core"
-description = "Core identifiers, enums, schemas, and error types for the Behavioral Assurance Runtime."
+name = "bar-config"
+description = "Typed configuration contract for the Behavioral Assurance Runtime (spec Appendix C)."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,7 +9,9 @@ authors.workspace = true
 repository.workspace = true
 
 [dependencies]
-uuid.workspace = true
+bar-core.workspace = true
+serde.workspace = true
+toml.workspace = true
 
 [lints]
 workspace = true

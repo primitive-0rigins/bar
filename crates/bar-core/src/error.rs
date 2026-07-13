@@ -30,6 +30,9 @@ pub enum Error {
     /// A value could not be parsed from its canonical string form (e.g. a
     /// malformed identifier).
     Parse(String),
+    /// Configuration could not be read, parsed, or validated. Fatal at startup;
+    /// never retried.
+    Config(String),
 }
 
 impl Error {
@@ -37,7 +40,9 @@ impl Error {
     pub fn retryability(&self) -> Retryability {
         match self {
             Error::Unavailable(_) => Retryability::Transient,
-            Error::Corrupt(_) | Error::Conflict(_) | Error::Parse(_) => Retryability::Permanent,
+            Error::Corrupt(_) | Error::Conflict(_) | Error::Parse(_) | Error::Config(_) => {
+                Retryability::Permanent
+            }
         }
     }
 }
@@ -49,6 +54,7 @@ impl core::fmt::Display for Error {
             Error::Unavailable(d) => write!(f, "dependency unavailable: {d}"),
             Error::Conflict(d) => write!(f, "workflow conflict: {d}"),
             Error::Parse(d) => write!(f, "parse error: {d}"),
+            Error::Config(d) => write!(f, "configuration error: {d}"),
         }
     }
 }
