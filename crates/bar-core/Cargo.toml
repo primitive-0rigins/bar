@@ -8,5 +8,8 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 
+[dependencies]
+uuid = { version = "1", features = ["v4"] }
+
 [lints]
 workspace = true

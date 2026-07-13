@@ -11,5 +11,7 @@
 
 pub mod enums;
 pub mod error;
+pub mod ids;
 
 pub use error::{Error, Result, Retryability};
+pub use ids::Sha256Digest;

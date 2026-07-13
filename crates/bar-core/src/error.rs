@@ -27,6 +27,9 @@ pub enum Error {
     /// A workflow transition conflicted with existing state, e.g. an idempotency
     /// key that was already applied.
     Conflict(String),
+    /// A value could not be parsed from its canonical string form (e.g. a
+    /// malformed identifier).
+    Parse(String),
 }
 
 impl Error {
@@ -34,7 +37,7 @@ impl Error {
     pub fn retryability(&self) -> Retryability {
         match self {
             Error::Unavailable(_) => Retryability::Transient,
-            Error::Corrupt(_) | Error::Conflict(_) => Retryability::Permanent,
+            Error::Corrupt(_) | Error::Conflict(_) | Error::Parse(_) => Retryability::Permanent,
         }
     }
 }
@@ -45,6 +48,7 @@ impl core::fmt::Display for Error {
             Error::Corrupt(d) => write!(f, "corrupt input: {d}"),
             Error::Unavailable(d) => write!(f, "dependency unavailable: {d}"),
             Error::Conflict(d) => write!(f, "workflow conflict: {d}"),
+            Error::Parse(d) => write!(f, "parse error: {d}"),
         }
     }
 }

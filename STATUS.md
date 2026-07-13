@@ -14,18 +14,25 @@ benchmark harness.
   clippy `all` warned workspace-wide.
 - `bar-core`: the seven core persisted enums (spec §6.3) with stable string
   tokens, plus the typed `Error`/`Result` foundation with retry classification
-  (spec §20.1). Fully tested; `cargo test`, `cargo clippy`, `cargo fmt --check`
-  all clean.
+  (spec §20.1). Fully tested.
+- `bar-core`: the stable identifier system (spec §6.1) — 14 UUID newtypes and
+  the two content-hash ids (`RevisionId`, `ArtifactId`) over a `Sha256Digest`,
+  each with a fixed namespace prefix and canonical `prefix/body` string form.
+  Distinct types (a `FindingId` cannot stand in for a `RepairId`). Fully tested;
+  `cargo test`, `cargo clippy -D warnings`, `cargo fmt --check` all clean.
 - Repository foundation: README, MIT license, `.gitignore`, CI (fmt + clippy +
   test), and the normative spec under `docs/`.
 
 ### Next (remaining Phase 0)
 
-- `bar-core`: stable identifiers and revision identity (spec §6.1–6.2).
 - Config loading and structured logging.
 - `bar-audit`: append-only audit chain + tamper test.
 - `migrations/` + replay test.
 - Resource benchmark harness; daemon starts model-free.
+
+The revision-identity *bundle* (spec §6.2 — commit/dirty hash, build manifest,
+toolchain, deployment id, topology) is deferred to **Phase 1**, where the target
+connector supplies its inputs (§21 Phase 1). `RevisionId` itself already exists.
 
 **Exit criteria:** daemon starts model-free; old migrations replay; audit tamper
 test passes.
