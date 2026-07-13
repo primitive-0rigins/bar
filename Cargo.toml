@@ -1,0 +1,18 @@
+[workspace]
+resolver = "2"
+members = ["crates/bar-core"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.85"
+license = "MIT"
+authors = ["Bryce Worthy"]
+repository = "https://github.com/primitive-0rigins/bar"
+readme = "README.md"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
