@@ -1,0 +1,16 @@
+[package]
+name = "bar-audit"
+description = "Append-only, hash-chained audit log for the Behavioral Assurance Runtime (spec §19)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+bar-core.workspace = true
+sha2.workspace = true
+
+[lints]
+workspace = true

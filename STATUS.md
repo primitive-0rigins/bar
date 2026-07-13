@@ -29,12 +29,17 @@ benchmark harness.
   `tracing` (text or `BAR_LOG_FORMAT=json`), and **starts model-free** — verified
   by running it: boots, logs a structured readiness summary, exits 0. Its
   long-running service loop lands with the API phase.
+- `bar-audit`: the append-only, hash-chained audit log (spec §18–19). Each record
+  commits (SHA-256 over a length-prefixed canonical encoding) to its
+  predecessor's hash. **The tamper test — the Phase-0 exit criterion — passes:**
+  value/timestamp/category/subject mutation, reorder, insertion, truncation, and
+  broken links are all detected; a clean chain verifies. JSONL mirror, DB index,
+  optional signatures, and crash replay are deferred to the storage layer.
 - Repository foundation: README, MIT license, `.gitignore`, CI (fmt + clippy +
   test), and the normative spec under `docs/`.
 
 ### Next (remaining Phase 0)
 
-- `bar-audit`: append-only audit chain + tamper test.
 - `migrations/` + replay test.
 - Resource benchmark harness; daemon starts model-free.
 

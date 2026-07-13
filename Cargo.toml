@@ -1,6 +1,11 @@
 [workspace]
 resolver = "2"
-members = ["crates/bar-core", "crates/bar-config", "crates/bar-daemon"]
+members = [
+    "crates/bar-core",
+    "crates/bar-config",
+    "crates/bar-audit",
+    "crates/bar-daemon",
+]
 
 [workspace.package]
 version = "0.0.0"
@@ -15,6 +20,7 @@ readme = "README.md"
 bar-core = { path = "crates/bar-core" }
 bar-config = { path = "crates/bar-config" }
 uuid = { version = "1", features = ["v4"] }
+sha2 = "0.10"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 tracing = "0.1"
