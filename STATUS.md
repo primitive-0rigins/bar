@@ -35,13 +35,20 @@ benchmark harness.
   value/timestamp/category/subject mutation, reorder, insertion, truncation, and
   broken links are all detected; a clean chain verifies. JSONL mirror, DB index,
   optional signatures, and crash replay are deferred to the storage layer.
+- `bar-store`: the relational store and migrations (spec §19), on `sqlx` with
+  SQLite locally and PostgreSQL as a production option. Root `migrations/` are
+  embedded at compile time; **replay is idempotent** (a reopened store applies
+  no duplicate migrations — the "old migrations replay" exit criterion). The
+  audit chain persists to a DB-indexed `audit_log` and reloads with stored
+  hashes intact, so a row edited outside BAR fails re-verification. Queries are
+  runtime-checked, so a clean build needs no live database.
 - Repository foundation: README, MIT license, `.gitignore`, CI (fmt + clippy +
   test), and the normative spec under `docs/`.
 
 ### Next (remaining Phase 0)
 
-- `migrations/` + replay test.
-- Resource benchmark harness; daemon starts model-free.
+- Resource benchmark harness (the last Phase-0 item). "Daemon starts model-free"
+  is already met by `bar-daemon`.
 
 The revision-identity *bundle* (spec §6.2 — commit/dirty hash, build manifest,
 toolchain, deployment id, topology) is deferred to **Phase 1**, where the target

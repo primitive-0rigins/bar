@@ -53,6 +53,19 @@ impl AuditCategory {
             AuditCategory::LifecycleTransition => "lifecycle_transition",
         }
     }
+
+    /// Parses a category from its stable token (used when loading persisted
+    /// records).
+    pub fn from_token(token: &str) -> Result<Self> {
+        Ok(match token {
+            "approval" => AuditCategory::Approval,
+            "waiver" => AuditCategory::Waiver,
+            "ruling" => AuditCategory::Ruling,
+            "access" => AuditCategory::Access,
+            "lifecycle_transition" => AuditCategory::LifecycleTransition,
+            other => return Err(Error::Parse(format!("unknown audit category: {other}"))),
+        })
+    }
 }
 
 /// A single audited event. The caller supplies `occurred_at_ms` (Unix epoch
@@ -123,6 +136,14 @@ impl AuditChain {
     /// Creates an empty chain.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Reconstructs a chain from stored records **without recomputing hashes**,
+    /// so a subsequent [`verify`](Self::verify) checks each stored hash against
+    /// its stored content — detecting storage-level tampering, not just
+    /// in-memory mutation. Records must be supplied in sequence order.
+    pub fn from_records(records: Vec<AuditRecord>) -> Self {
+        Self { records }
     }
 
     /// The hash new records chain from: the last record's hash, or [`GENESIS`].

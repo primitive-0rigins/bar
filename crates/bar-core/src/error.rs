@@ -33,13 +33,15 @@ pub enum Error {
     /// Configuration could not be read, parsed, or validated. Fatal at startup;
     /// never retried.
     Config(String),
+    /// A storage/database operation failed (connection, query, or migration).
+    Storage(String),
 }
 
 impl Error {
     /// Classifies whether this error is worth retrying (spec §20.1).
     pub fn retryability(&self) -> Retryability {
         match self {
-            Error::Unavailable(_) => Retryability::Transient,
+            Error::Unavailable(_) | Error::Storage(_) => Retryability::Transient,
             Error::Corrupt(_) | Error::Conflict(_) | Error::Parse(_) | Error::Config(_) => {
                 Retryability::Permanent
             }
@@ -55,6 +57,7 @@ impl core::fmt::Display for Error {
             Error::Conflict(d) => write!(f, "workflow conflict: {d}"),
             Error::Parse(d) => write!(f, "parse error: {d}"),
             Error::Config(d) => write!(f, "configuration error: {d}"),
+            Error::Storage(d) => write!(f, "storage error: {d}"),
         }
     }
 }

@@ -4,6 +4,7 @@ members = [
     "crates/bar-core",
     "crates/bar-config",
     "crates/bar-audit",
+    "crates/bar-store",
     "crates/bar-daemon",
 ]
 
@@ -19,12 +20,16 @@ readme = "README.md"
 [workspace.dependencies]
 bar-core = { path = "crates/bar-core" }
 bar-config = { path = "crates/bar-config" }
+bar-audit = { path = "crates/bar-audit" }
 uuid = { version = "1", features = ["v4"] }
 sha2 = "0.10"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "postgres", "migrate"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tempfile = "3"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

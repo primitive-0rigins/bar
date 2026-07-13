@@ -1,0 +1,21 @@
+[package]
+name = "bar-store"
+description = "Relational store and migrations for the Behavioral Assurance Runtime (spec §19)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+bar-core.workspace = true
+bar-audit.workspace = true
+sqlx.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true
