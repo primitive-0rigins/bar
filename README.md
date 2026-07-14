@@ -54,8 +54,14 @@ system, issue tracker, or observability replacement — and it emits no single
 ```
 bar/
 ├── crates/
-│   └── bar-core/      # IDs, enums, schemas, errors (this is Phase 0)
-├── docs/              # normative specification and design notes
+│   ├── bar-core/      # IDs, enums, schemas, typed errors
+│   ├── bar-config/    # configuration contract (spec Appendix C)
+│   ├── bar-audit/     # append-only hash-chained audit log
+│   ├── bar-store/     # sqlx store + migrations (SQLite / PostgreSQL)
+│   ├── bar-bench/     # resource benchmark harness (spec §4, §22)
+│   └── bar-daemon/    # the mandatory model-free process (spec §5.1)
+├── migrations/        # root SQL migrations, embedded at compile time
+├── docs/              # normative specification and phase evidence
 ├── STATUS.md          # living project status
 └── Cargo.toml         # workspace root
 ```
