@@ -42,13 +42,30 @@ benchmark harness.
   audit chain persists to a DB-indexed `audit_log` and reloads with stored
   hashes intact, so a row edited outside BAR fails re-verification. Queries are
   runtime-checked, so a clean build needs no live database.
+- `bar-bench`: the resource benchmark harness (spec §4, §22). `peak_rss_bytes()`
+  reads the process high-water mark from Linux `/proc/self/status` (`VmHWM`) —
+  race-free, no sampling loop, no `unsafe`; `None` off `/proc` rather than a
+  fabricated number. The daemon reports its boot footprint, and
+  `resource_budget.rs` spawns the real binary model-free and asserts it stays
+  under the §4 budget — making the resource contract a **regression test, not a
+  documentation target** (spec §22). Observed boot peak: ~5.1 MB. This proves
+  *boot* peak RSS, not the §4 *idle* contract (no idle loop exists yet); at this
+  footprint the 300 MB ceiling's real job is guarding the model-free invariant
+  (§3.1). `bar-bench` is the measurement primitive later §23 performance rows
+  build on — distinct from the future `bar-resource` governor (§5), which *acts*
+  on these readings rather than taking them.
 - Repository foundation: README, MIT license, `.gitignore`, CI (fmt + clippy +
   test), and the normative spec under `docs/`.
 
-### Next (remaining Phase 0)
+### Phase 0 status
 
-- Resource benchmark harness (the last Phase-0 item). "Daemon starts model-free"
-  is already met by `bar-daemon`.
+All Phase-0 implementation items are delivered and green (38 tests, clippy
+`-D warnings` and fmt clean). Completion evidence per spec Appendix AP:
+[`docs/phase-evidence/phase-0.md`](docs/phase-evidence/phase-0.md) — **pending
+human review** before the phase is formally closed and Phase 1 begins.
+
+Idle CPU/RAM, incremental-scan RAM, high-volume ingestion, and target-pressure
+suspension (spec §23 performance rows) join the harness with the service loop.
 
 The revision-identity *bundle* (spec §6.2 — commit/dirty hash, build manifest,
 toolchain, deployment id, topology) is deferred to **Phase 1**, where the target
