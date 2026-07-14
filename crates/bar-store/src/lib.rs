@@ -17,6 +17,7 @@ use std::str::FromStr;
 
 use bar_audit::{record_hash, AuditCategory, AuditChain, AuditEvent, AuditRecord, GENESIS};
 use bar_core::{Error, Result, RevisionId, Sha256Digest, TargetId};
+use bar_discovery::{ArtifactKind, Inventory, PriorArtifact, PriorInventory};
 use bar_target::{ConnectorKind, ResolvedTarget, RevisionIdentity, TargetStatus};
 use sqlx::sqlite::{Sqlite, SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
 use sqlx::{FromRow, Transaction};
@@ -238,6 +239,92 @@ impl Store {
                 .map_err(storage("get target"))?;
         row.map(TargetRow::into_record).transpose()
     }
+
+    /// Persists a scanned [`Inventory`] under `revision_id`, bracketed by
+    /// `target.scan.started` / `target.scan.completed` audit events (Appendix F).
+    /// Artifact rows are keyed on the content-derived id and inserted
+    /// idempotently, so re-persisting the same inventory is a no-op. Per-artifact
+    /// delta events are deferred to the evidence-invalidation phase that consumes
+    /// them, keeping the initial bulk scan to two audit records rather than one
+    /// per file.
+    pub async fn persist_inventory(
+        &self,
+        target_id: &TargetId,
+        revision_id: &RevisionId,
+        inventory: &Inventory,
+        now_ms: u64,
+    ) -> Result<()> {
+        let now = now_ms as i64;
+        let mut tx = self.pool.begin().await.map_err(storage("begin"))?;
+
+        append_audit(&mut tx, scan_event(now_ms, "target.scan.started", None)).await?;
+
+        for artifact in &inventory.artifacts {
+            let artifact_id = artifact.artifact_id(revision_id);
+            sqlx::query(
+                "INSERT INTO artifacts \
+                 (artifact_id, target_id, revision_id, logical_path, content_sha256, media_type, \
+                  artifact_kind, source_of_truth, size_bytes, modified_at_ms, discovered_at_ms) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
+            )
+            .bind(artifact_id.to_string())
+            .bind(target_id.to_string())
+            .bind(revision_id.to_string())
+            .bind(&artifact.logical_path)
+            .bind(&artifact.content_sha256)
+            .bind(&artifact.media_type)
+            .bind(artifact.artifact_kind.as_str())
+            .bind(i64::from(artifact.source_of_truth))
+            .bind(artifact.size_bytes as i64)
+            .bind(artifact.modified_at_ms)
+            .bind(now)
+            .execute(&mut *tx)
+            .await
+            .map_err(storage("insert artifact"))?;
+        }
+
+        let s = &inventory.summary;
+        let summary = format!(
+            "scan complete: {} artifacts (+{} ~{} -{}), {} hashed",
+            s.total, s.added, s.changed, s.removed, s.hashed
+        );
+        append_audit(
+            &mut tx,
+            scan_event(now_ms, "target.scan.completed", Some(summary)),
+        )
+        .await?;
+
+        tx.commit().await.map_err(storage("commit"))?;
+        Ok(())
+    }
+
+    /// Loads a revision's persisted inventory as a [`PriorInventory`], the input
+    /// the next scan carries unchanged files forward from.
+    pub async fn load_inventory(&self, revision_id: &RevisionId) -> Result<PriorInventory> {
+        let rows: Vec<ArtifactRow> = sqlx::query_as(
+            "SELECT logical_path, content_sha256, media_type, artifact_kind, source_of_truth, \
+             size_bytes, modified_at_ms FROM artifacts WHERE revision_id = ?",
+        )
+        .bind(revision_id.to_string())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(storage("load inventory"))?;
+
+        rows.into_iter()
+            .map(|row| Ok((row.logical_path.clone(), row.into_prior()?)))
+            .collect()
+    }
+}
+
+/// Builds a scan-level audit event.
+fn scan_event(now_ms: u64, kind: &str, detail: Option<String>) -> AuditEvent {
+    AuditEvent {
+        category: AuditCategory::LifecycleTransition,
+        actor: SYSTEM_ACTOR.to_string(),
+        summary: detail.unwrap_or_else(|| kind.to_string()),
+        subject: Some(kind.to_string()),
+        occurred_at_ms: now_ms,
+    }
 }
 
 /// Appends one event to the audit chain inside an open transaction, chaining it
@@ -339,6 +426,32 @@ impl TargetRow {
             root_locator: self.root_locator,
             status: TargetStatus::from_token(&self.status)?,
             version: self.version,
+        })
+    }
+}
+
+/// One `artifacts` row at the DB boundary (the subset needed to reconstruct a
+/// [`PriorArtifact`] for carry-forward).
+#[derive(FromRow)]
+struct ArtifactRow {
+    logical_path: String,
+    content_sha256: String,
+    media_type: String,
+    artifact_kind: String,
+    source_of_truth: i64,
+    size_bytes: i64,
+    modified_at_ms: Option<i64>,
+}
+
+impl ArtifactRow {
+    fn into_prior(self) -> Result<PriorArtifact> {
+        Ok(PriorArtifact {
+            content_sha256: self.content_sha256,
+            media_type: self.media_type,
+            artifact_kind: ArtifactKind::from_token(&self.artifact_kind)?,
+            source_of_truth: self.source_of_truth != 0,
+            size_bytes: self.size_bytes as u64,
+            modified_at_ms: self.modified_at_ms,
         })
     }
 }
@@ -620,6 +733,136 @@ mod tests {
                 .unwrap();
         assert_eq!(commit, resolved.revision.source_commit);
         assert!(commit.is_some(), "a bound revision persists a commit");
+    }
+
+    // --- Phase 2: artifact inventory ---
+
+    fn tree_target(root: &std::path::Path) -> ResolvedTarget {
+        ResolvedTarget {
+            name: "app".into(),
+            root_locator: root.to_path_buf(),
+            connector_kind: ConnectorKind::Filesystem,
+            revision: RevisionIdentity::unbound(),
+        }
+    }
+
+    fn write_file(root: &std::path::Path, rel: &str, content: &[u8]) {
+        let path = root.join(rel);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(path, content).unwrap();
+    }
+
+    fn revision(commit: &str, dirty: Option<&str>) -> RevisionIdentity {
+        RevisionIdentity {
+            source_commit: Some(commit.into()),
+            dirty_hash: dirty.map(str::to_string),
+        }
+    }
+
+    #[tokio::test]
+    async fn inventory_persists_reloads_and_audits_the_scan() {
+        let repo = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(repo.path()).unwrap();
+        write_file(&root, "src/main.rs", b"fn main() {}");
+        write_file(&root, "README.md", b"# hi");
+
+        let (store, _dir) = temp_store().await;
+        let target_id = store
+            .register_target(&tree_target(&root), T0)
+            .await
+            .unwrap()
+            .target_id;
+        let rev_id = store
+            .record_revision(&target_id, &revision("c1", None), T0)
+            .await
+            .unwrap()
+            .revision_id;
+
+        let inv = bar_discovery::scan(
+            &root,
+            &bar_discovery::ScanConfig::default(),
+            &PriorInventory::new(),
+        )
+        .unwrap();
+        store
+            .persist_inventory(&target_id, &rev_id, &inv, T0)
+            .await
+            .unwrap();
+
+        let loaded = store.load_inventory(&rev_id).await.unwrap();
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded["src/main.rs"].artifact_kind, ArtifactKind::Code);
+
+        // Re-persisting the same inventory is idempotent (no duplicate rows).
+        store
+            .persist_inventory(&target_id, &rev_id, &inv, T0)
+            .await
+            .unwrap();
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM artifacts")
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 2);
+
+        // register + record + two scans (each: started + completed) = 6 events.
+        let chain = store.load_audit_chain().await.unwrap();
+        chain.verify().unwrap();
+        assert_eq!(chain.len(), 6);
+    }
+
+    #[tokio::test]
+    async fn incremental_rescan_through_store_rehashes_only_the_changed_file() {
+        // The Phase-2 exit criterion, end to end: the prior inventory is loaded
+        // back from the database and drives carry-forward.
+        let repo = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(repo.path()).unwrap();
+        for i in 0..4 {
+            write_file(&root, &format!("f{i}.txt"), format!("v0-{i}").as_bytes());
+        }
+
+        let (store, _dir) = temp_store().await;
+        let target_id = store
+            .register_target(&tree_target(&root), T0)
+            .await
+            .unwrap()
+            .target_id;
+        let cfg = bar_discovery::ScanConfig::default();
+
+        let r1 = store
+            .record_revision(&target_id, &revision("c", None), T0)
+            .await
+            .unwrap()
+            .revision_id;
+        let inv1 = bar_discovery::scan(&root, &cfg, &PriorInventory::new()).unwrap();
+        assert_eq!(inv1.summary.hashed, 4);
+        store
+            .persist_inventory(&target_id, &r1, &inv1, T0)
+            .await
+            .unwrap();
+
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        write_file(&root, "f1.txt", b"changed-content");
+
+        let r2 = store
+            .record_revision(&target_id, &revision("c", Some("dirty")), T0 + 1)
+            .await
+            .unwrap()
+            .revision_id;
+        assert_ne!(r1, r2);
+
+        let prior = store.load_inventory(&r1).await.unwrap();
+        let inv2 = bar_discovery::scan(&root, &cfg, &prior).unwrap();
+        assert_eq!(inv2.summary.hashed, 1, "only the changed file is read");
+        assert_eq!(inv2.summary.changed, 1);
+        assert_eq!(inv2.summary.unchanged, 3);
+
+        store
+            .persist_inventory(&target_id, &r2, &inv2, T0 + 1)
+            .await
+            .unwrap();
+        assert_eq!(store.load_inventory(&r2).await.unwrap().len(), 4);
     }
 
     fn git_available() -> bool {

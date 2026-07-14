@@ -14,4 +14,4 @@ pub mod error;
 pub mod ids;
 
 pub use error::{Error, Result, Retryability};
-pub use ids::{RevisionId, Sha256Digest, TargetId};
+pub use ids::{ArtifactId, RevisionId, Sha256Digest, TargetId};

@@ -12,6 +12,7 @@ repository.workspace = true
 bar-core.workspace = true
 bar-audit.workspace = true
 bar-target.workspace = true
+bar-discovery.workspace = true
 sqlx.workspace = true
 
 [dev-dependencies]

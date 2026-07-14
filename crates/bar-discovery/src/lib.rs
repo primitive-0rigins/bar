@@ -33,7 +33,7 @@ use std::collections::HashMap;
 use std::io::Read;
 use std::path::Path;
 
-use bar_core::{Result, Sha256Digest};
+use bar_core::{ArtifactId, Result, RevisionId, Sha256Digest};
 use sha2::{Digest, Sha256};
 
 pub use classify::ArtifactKind;
@@ -89,6 +89,27 @@ pub struct DiscoveredArtifact {
     pub source_of_truth: bool,
     pub size_bytes: u64,
     pub modified_at_ms: Option<i64>,
+}
+
+impl DiscoveredArtifact {
+    /// The content-derived [`ArtifactId`] for this artifact under `revision`
+    /// (spec §6.1 content-hash id). Deterministic over `(revision, path,
+    /// content)`, so persisting the same inventory twice is idempotent. Encoded
+    /// length-prefixed, like the audit chain.
+    pub fn artifact_id(&self, revision: &RevisionId) -> ArtifactId {
+        let mut hasher = Sha256::new();
+        update_field(&mut hasher, revision.to_string().as_bytes());
+        update_field(&mut hasher, self.logical_path.as_bytes());
+        update_field(&mut hasher, self.content_sha256.as_bytes());
+        ArtifactId::from_digest(Sha256Digest::from_bytes(hasher.finalize().into()))
+    }
+}
+
+/// Absorbs a field as `len(u64 big-endian) ‖ bytes`, keeping boundaries
+/// unambiguous.
+fn update_field(hasher: &mut Sha256, bytes: &[u8]) {
+    hasher.update((bytes.len() as u64).to_be_bytes());
+    hasher.update(bytes);
 }
 
 /// What the store hands back from the prior revision so unchanged files can be
