@@ -41,6 +41,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "bar-bench"
+version = "0.0.0"
+
+[[package]]
 name = "bar-config"
 version = "0.0.0"
 dependencies = [
@@ -60,8 +64,10 @@ dependencies = [
 name = "bar-daemon"
 version = "0.0.0"
 dependencies = [
+ "bar-bench",
  "bar-config",
  "bar-core",
+ "serde_json",
  "tracing",
  "tracing-subscriber",
 ]

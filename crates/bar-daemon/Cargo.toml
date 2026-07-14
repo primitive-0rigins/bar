@@ -11,8 +11,12 @@ repository.workspace = true
 [dependencies]
 bar-core.workspace = true
 bar-config.workspace = true
+bar-bench.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
 
 [lints]
 workspace = true

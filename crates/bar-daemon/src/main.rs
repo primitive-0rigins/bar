@@ -34,13 +34,27 @@ fn run() -> Result<()> {
         tracing::info!("model support disabled; running model-free");
     }
 
-    tracing::info!(
-        config_source = %source,
-        listen = %config.server.listen,
-        models_enabled = config.models.enabled,
-        gpu_enabled = config.resources.gpu_enabled,
-        "bar-daemon initialized"
-    );
+    // Report the model-free boot footprint (spec §4). The resource benchmark
+    // harness asserts this stays within budget; a human can also eyeball drift
+    // the ceiling would not trip. `None` where /proc is unavailable — reported
+    // as unavailable rather than a fabricated number.
+    match bar_bench::peak_rss_bytes() {
+        Some(peak_rss_bytes) => tracing::info!(
+            config_source = %source,
+            listen = %config.server.listen,
+            models_enabled = config.models.enabled,
+            gpu_enabled = config.resources.gpu_enabled,
+            peak_rss_bytes,
+            "bar-daemon initialized"
+        ),
+        None => tracing::info!(
+            config_source = %source,
+            listen = %config.server.listen,
+            models_enabled = config.models.enabled,
+            gpu_enabled = config.resources.gpu_enabled,
+            "bar-daemon initialized"
+        ),
+    }
     Ok(())
 }
 
