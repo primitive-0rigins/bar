@@ -6,6 +6,7 @@ members = [
     "crates/bar-audit",
     "crates/bar-store",
     "crates/bar-target",
+    "crates/bar-discovery",
     "crates/bar-bench",
     "crates/bar-daemon",
 ]
@@ -25,6 +26,7 @@ bar-config = { path = "crates/bar-config" }
 bar-audit = { path = "crates/bar-audit" }
 bar-bench = { path = "crates/bar-bench" }
 bar-target = { path = "crates/bar-target" }
+bar-discovery = { path = "crates/bar-discovery" }
 uuid = { version = "1", features = ["v4"] }
 sha2 = "0.10"
 serde = { version = "1", features = ["derive"] }

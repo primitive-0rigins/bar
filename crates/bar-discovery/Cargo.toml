@@ -1,0 +1,19 @@
+[package]
+name = "bar-discovery"
+description = "Boundary-respecting artifact discovery with incremental, cross-revision carry-forward (spec §8)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+bar-core.workspace = true
+sha2.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

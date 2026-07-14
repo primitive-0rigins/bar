@@ -73,6 +73,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "bar-discovery"
+version = "0.0.0"
+dependencies = [
+ "bar-core",
+ "sha2",
+ "tempfile",
+]
+
+[[package]]
 name = "bar-store"
 version = "0.0.0"
 dependencies = [
