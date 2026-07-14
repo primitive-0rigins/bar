@@ -2,7 +2,48 @@
 
 Living status of the Behavioral Assurance Runtime build. Newest first.
 
-## Current phase: 0 — Baseline, repository skeleton
+## Current phase: 1 — Target registration and identity
+
+Per [`docs/spec.md`](docs/spec.md) §21, Phase 1 delivers a local Git/filesystem
+connector, commit/dirty revision identity, an idempotent target registry, and a
+read-only policy.
+
+### Done
+
+- `bar-target`: the connector + identity layer (read-only throughout).
+  `resolve_target` produces a canonical root locator, a connector kind
+  (`git` | `filesystem`), and the Phase-1 slice of revision identity. A git tree
+  BAR cannot read yields an explicit **unbound** revision (spec §6.2), never
+  fabricated identity.
+- `bar-target`: `resolve_within` — the security primitive behind the
+  "symlink/path traversal blocked" exit criterion. It canonicalizes both the
+  root and any candidate path so `..`, relative paths, and symlinks collapse to
+  their real location, then rejects anything escaping the root. The file *walk*
+  that consumes it lands with discovery (Phase 2); Phase 1 builds and proves the
+  primitive.
+- `bar-target`: read-only git reads (HEAD + a **content-sensitive** dirty hash
+  over `git diff HEAD` and untracked path+content — two different edits hash
+  differently, which `git status --porcelain` cannot distinguish). Deterministic,
+  injective `RevisionId` derivation so recording a revision is idempotent.
+- `bar-store`: migration `0002`, and an **idempotent** target registry.
+  `register_target` dedupes on the canonical root (exit criterion), mints a
+  `TargetId`, and records the mandated `target.registered` audit event
+  (Appendix F) in the same transaction; `record_revision` dedupes on the
+  content-derived `RevisionId` and emits `revision.discovered`. No duplicate
+  rows, no duplicate audit events; the chain still verifies.
+- `bar-core`: `Error::Target`; `TargetId`/`RevisionId` re-exported at the root.
+
+Both exit criteria are met and tested (57 tests, clippy `-D warnings` and fmt
+clean). Completion evidence per spec Appendix AP:
+[`docs/phase-evidence/phase-1.md`](docs/phase-evidence/phase-1.md) — **pending
+human review**.
+
+The operator entry point (CLI/HTTP registration) is deferred to the API phase;
+Phase 1 lands registration as a tested library capability (shadow-first). The
+full Appendix F audit envelope (first-class `event_type`, idempotency key,
+causal mechanism, payload schema version) is a later audit-hardening pass.
+
+## Phase 0 — Baseline, repository skeleton
 
 Per [`docs/spec.md`](docs/spec.md) §21, Phase 0 delivers the workspace, core
 types, config, structured logging, audit chain, migrations, and a resource
