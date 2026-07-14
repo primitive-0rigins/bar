@@ -35,6 +35,9 @@ pub enum Error {
     Config(String),
     /// A storage/database operation failed (connection, query, or migration).
     Storage(String),
+    /// A target could not be resolved: its root is missing, is not a directory,
+    /// or a path escapes the declared target boundary (spec §8, Appendix AA).
+    Target(String),
 }
 
 impl Error {
@@ -42,9 +45,11 @@ impl Error {
     pub fn retryability(&self) -> Retryability {
         match self {
             Error::Unavailable(_) | Error::Storage(_) => Retryability::Transient,
-            Error::Corrupt(_) | Error::Conflict(_) | Error::Parse(_) | Error::Config(_) => {
-                Retryability::Permanent
-            }
+            Error::Corrupt(_)
+            | Error::Conflict(_)
+            | Error::Parse(_)
+            | Error::Config(_)
+            | Error::Target(_) => Retryability::Permanent,
         }
     }
 }
@@ -58,6 +63,7 @@ impl core::fmt::Display for Error {
             Error::Parse(d) => write!(f, "parse error: {d}"),
             Error::Config(d) => write!(f, "configuration error: {d}"),
             Error::Storage(d) => write!(f, "storage error: {d}"),
+            Error::Target(d) => write!(f, "target error: {d}"),
         }
     }
 }

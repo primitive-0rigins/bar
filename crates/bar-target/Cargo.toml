@@ -1,0 +1,19 @@
+[package]
+name = "bar-target"
+description = "Local target connectors, boundary enforcement, and revision identity (spec §6.2, §8, Appendix AA)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+bar-core.workspace = true
+sha2.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

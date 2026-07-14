@@ -78,9 +78,19 @@ version = "0.0.0"
 dependencies = [
  "bar-audit",
  "bar-core",
+ "bar-target",
  "sqlx",
  "tempfile",
  "tokio",
+]
+
+[[package]]
+name = "bar-target"
+version = "0.0.0"
+dependencies = [
+ "bar-core",
+ "sha2",
+ "tempfile",
 ]
 
 [[package]]
