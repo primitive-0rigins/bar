@@ -579,4 +579,73 @@ mod tests {
         chain.verify().unwrap();
         assert_eq!(chain.len(), 3);
     }
+
+    // End-to-end seam: a target resolved from a real git repo (not a hand-built
+    // struct) flows through registration and revision recording, and the bound
+    // commit lands in the row. Skipped when `git` is unavailable.
+    #[tokio::test]
+    async fn resolve_then_register_and_record_a_real_git_target() {
+        if !git_available() {
+            return;
+        }
+        let (store, _dir) = temp_store().await;
+
+        let repo = tempfile::tempdir().unwrap();
+        init_repo(repo.path());
+        std::fs::write(repo.path().join("a.txt"), b"hello").unwrap();
+        git_in(repo.path(), &["add", "."]);
+        git_in(repo.path(), &["commit", "-q", "-m", "init"]);
+
+        let resolved = bar_target::resolve_target("live", repo.path()).unwrap();
+        assert_eq!(resolved.connector_kind, ConnectorKind::Git);
+        assert!(resolved.revision.is_bound());
+
+        let reg = store.register_target(&resolved, T0).await.unwrap();
+        assert_eq!(reg.outcome, RegistrationOutcome::Registered);
+        let record = store.get_target(&reg.target_id).await.unwrap().unwrap();
+        assert_eq!(record.connector_kind, ConnectorKind::Git);
+
+        let rev = store
+            .record_revision(&reg.target_id, &resolved.revision, T0)
+            .await
+            .unwrap();
+        assert!(rev.newly_recorded);
+
+        // The bound revision persisted its real commit.
+        let commit: Option<String> =
+            sqlx::query_scalar("SELECT source_commit FROM target_revisions WHERE revision_id = ?")
+                .bind(rev.revision_id.to_string())
+                .fetch_one(&store.pool)
+                .await
+                .unwrap();
+        assert_eq!(commit, resolved.revision.source_commit);
+        assert!(commit.is_some(), "a bound revision persists a commit");
+    }
+
+    fn git_available() -> bool {
+        std::process::Command::new("git")
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+
+    fn git_in(dir: &std::path::Path, args: &[&str]) {
+        let ok = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .output()
+            .unwrap()
+            .status
+            .success();
+        assert!(ok, "git {args:?} failed");
+    }
+
+    fn init_repo(dir: &std::path::Path) {
+        git_in(dir, &["init", "-q"]);
+        git_in(dir, &["config", "user.email", "t@bar.test"]);
+        git_in(dir, &["config", "user.name", "bar-test"]);
+        git_in(dir, &["config", "commit.gpgsign", "false"]);
+    }
 }

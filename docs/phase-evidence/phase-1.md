@@ -99,6 +99,9 @@ boot budget regression test still holds.
   backend can swap in behind the same functions later.
 - Dirty-hash reads untracked file contents; discovery-phase size/ignore limits
   (spec §23, scan config) are not yet applied here.
+- The registration idempotency key is the `root_locator` string via
+  `to_string_lossy`, so two distinct non-UTF-8 paths could in principle collide
+  to one key (Linux-only edge). Canonical repository roots are UTF-8 in practice.
 
 ## next_phase_dependencies
 
