@@ -37,14 +37,16 @@ versioned operator rulings when overlap remains ambiguous.
   from durable declarations plus evidence-bound context instead of being
   stored as stale context-free state.
 - `bar-store` migration `0008` adds immutable scope-context evidence bound to a
-  target, revision, observed timestamp, and exact artifact span/hash. Persistence
-  is replay-idempotent and atomically audited; cross-target revision/artifact
-  references, invalid spans, blank values, malformed JSON, and negative stored
-  observation times fail closed. A caller-supplied source revision cannot
-  override stored revision identity, and snapshots reload after database reopen.
+  target, revision, observed timestamp, and complete inventoried artifact. The
+  whole-artifact digest remains independently verifiable until excerpt evidence
+  storage lands. Persistence is replay-idempotent and atomically audited;
+  cross-target references, invalid spans/digests, blank values, malformed JSON,
+  and negative stored observation times fail closed. A caller-supplied source
+  revision cannot override stored revision identity, and snapshots reload after
+  database reopen.
 
-All 102 repository tests pass; clippy `-D warnings` and fmt are clean.
-Implementation revisions: `5a9b3ef`, `f9e71af`, `414be5c`.
+All 108 repository tests pass; clippy `-D warnings` and fmt are clean.
+Implementation revisions: `5a9b3ef`, `f9e71af`, `414be5c`, `15adcfd`.
 
 ### Remaining before Phase 4 completion
 
@@ -72,6 +74,40 @@ Implementation revisions: `5a9b3ef`, `f9e71af`, `414be5c`.
   per-target authority or permit evidence leakage.
 - Acceptance requires simultaneous-change, noisy-neighbor, restart/replay, and
   cross-target contamination tests before the capability is called delivered.
+
+### Repository hardening pass
+
+- Target resolution now rejects noncanonical declared roots. Discovery
+  canonicalizes its root, rechecks containment and the configured size limit on
+  the opened file, uses descriptor metadata, and skips non-UTF-8 paths rather
+  than creating lossy logical-path collisions.
+- Logical artifact paths use one portable validator and reject absolute paths,
+  dot segments, NULs, empty segments, and backslashes. Inventory persistence
+  verifies target/revision ownership before auditing or writing, and scan audit
+  subjects now identify the target instead of a generic event token.
+- Store integer boundaries use checked conversions. Oversized timestamps,
+  sizes, and offsets plus negative persisted values fail closed; a corrupt
+  audit sequence blocks and rolls back later mutations instead of overflowing.
+- Scope-context evidence is restricted to a complete inventoried artifact and
+  revalidates its digest during reload. An arbitrary but well-formed SHA-256 can
+  no longer masquerade as source provenance.
+- An explicitly configured missing `BAR_CONFIG` path now fails startup. Built-in
+  defaults remain available only when no explicit path is supplied and the
+  standard default file is absent.
+
+### Known repository debt
+
+- `crates/bar-store/src/lib.rs` is the only current god-file hotspot: about
+  1,700 production lines plus its in-file test module. Split it by audit,
+  target/inventory, and contract persistence in a dedicated behavior-preserving
+  refactor; mixing that mechanical move into security changes would obscure
+  review.
+- `cargo audit` reports `RUSTSEC-2023-0071` for `rsa 0.9.10`, retained in
+  `Cargo.lock` through SQLx's optional MySQL dependency. BAR enables only SQLite
+  and PostgreSQL, `cargo tree -i rsa` shows no compiled dependency path, and no
+  fixed RSA release exists. `cargo audit --ignore RUSTSEC-2023-0071` reports no
+  other advisories; keep tracking the upstream lock dependency rather than
+  claiming a clean unqualified audit.
 
 ## Phase 3 — Contract extraction shadow (implementation complete)
 
