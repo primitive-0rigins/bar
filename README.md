@@ -7,16 +7,15 @@ execution, prepares repair-ready findings, waits for **human approval**, hands
 approved work to a connected coding agent, and then independently verifies the
 result.
 
-> **Status:** Phase 4 — contract scope, temporal resolution, and adjudication,
-> in progress. The pure applicability resolver implements closed fail-safe
-> states, inclusive validity windows, documented scope precedence, and mandatory
-> adjudication for ties or unknown context. Scope, validity, supersession, and
-> evidence-bound operator rulings now persist transactionally and reload;
-> contextual applicability remains derived at the evidence observation time,
-> with an explicit operator-attested trust path. Phase 3 extraction is
-> implementation complete and pending human review. Build progresses through
-> the phased manual in [`docs/spec.md`](docs/spec.md) §21. See [`STATUS.md`](STATUS.md)
-> for the current state and remaining Phase 4 work.
+> **Status:** Phase 4 — contract scope, temporal resolution, and adjudication —
+> is implementation complete and pending human review. The pure applicability
+> resolver implements closed fail-safe states, inclusive validity windows,
+> documented scope precedence, and mandatory adjudication for ties or unknown
+> context. Scope, validity, supersession, and evidence-bound operator rulings
+> persist transactionally and reload; contextual applicability remains derived
+> at the evidence observation time. Phase 5 static architecture adapters are
+> next. Build progresses through the phased manual in [`docs/spec.md`](docs/spec.md)
+> §21; see [`STATUS.md`](STATUS.md) for current work and completion evidence.
 
 ## What it is
 

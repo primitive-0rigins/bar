@@ -2,13 +2,13 @@
 
 Living status of the Behavioral Assurance Runtime build. Newest first.
 
-## Current phase: 4 — Contract scope, temporal resolver, adjudication (in progress)
+## Current phase: 5 — Static architecture adapter v1 (ready to begin)
 
-Per [`docs/spec.md`](docs/spec.md) §7.2–§7.4 and §21, Phase 4 resolves scope
-precedence and temporal validity, preserves supersession history, and requires
-versioned operator rulings when overlap remains ambiguous.
+Phase 4 implementation is complete: scope precedence, temporal validity,
+supersession, and operator adjudication are durable and fail safe. Phase 5 next
+adds static architecture facts while keeping unknown code explicit.
 
-### Delivered
+### Phase 4 delivered
 
 - `bar-contract::scope` defines strict `ContractScope`, `ScopeContext`, and
   `TemporalWindow` inputs plus closed `applicable`, `not_applicable`, and
@@ -82,16 +82,13 @@ versioned operator rulings when overlap remains ambiguous.
 All 113 repository tests pass; clippy `-D warnings` and fmt are clean.
 Implementation revisions: `5a9b3ef`, `f9e71af`, `414be5c`, `15adcfd`, `ed0f016`, `2054c8d`, `a93a672`, `5483b93`, `3e63c89`, `ee9b01d`, `1862d2e`, `1c21194`, `d3d4c2a`, `3ec5aa9`, `37b3642`, `3696360`, `d0d8480`, `87adee3`.
 
-### Remaining before Phase 4 completion
+### Phase 4 completion evidence
 
-- Add trusted adapters that populate deployment, environment, configuration,
-  component, mode, flags, and tenant values automatically. Operator
-  attestations now provide a source-bound human-trusted path, but BAR does not
-  infer semantic values from cited bytes on its own.
-- Expose the durable operator dispositions through the dashboard/API workflow
-  in Phase 8.
-- Obtain human review and write Phase 4 completion evidence after the remaining
-  scope semantics are complete.
+[`docs/phase-evidence/phase-4.md`](docs/phase-evidence/phase-4.md) records the
+implemented requirements, fixtures, migrations, security checks, and remaining
+cross-phase dependencies. **Human review is pending.** Automatic runtime
+context adapters remain Phase 9 work; dashboard adjudication remains Phase 8
+work.
 
 ### Roadmap addition — concurrent multi-runtime monitoring
 
