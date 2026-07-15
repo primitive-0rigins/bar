@@ -51,9 +51,13 @@ versioned operator rulings when overlap remains ambiguous.
   active ruling; an edit creates a replacement record; expiry permits a new
   ruling; replay is idempotent; corrupt persisted links, target boundaries,
   timestamps, or serialized values fail closed on reload.
+- `bar-store::resolve_contract_in_context` resolves scope only at the persisted
+  scope-context observation time and requires the contract and context evidence
+  to belong to the same target. Callers can no longer reuse one evidence record
+  with a substituted earlier or later evaluation time.
 
-All 110 repository tests pass; clippy `-D warnings` and fmt are clean.
-Implementation revisions: `5a9b3ef`, `f9e71af`, `414be5c`, `15adcfd`, `ed0f016`.
+All 111 repository tests pass; clippy `-D warnings` and fmt are clean.
+Implementation revisions: `5a9b3ef`, `f9e71af`, `414be5c`, `15adcfd`, `ed0f016`, `2054c8d`.
 
 ### Remaining before Phase 4 completion
 
@@ -66,9 +70,8 @@ Implementation revisions: `5a9b3ef`, `f9e71af`, `414be5c`, `15adcfd`, `ed0f016`.
   and its rejected alternatives; the dashboard/API workflow is Phase 8.
 - Add Phase 4 adversarial fixtures for overlapping scopes, late/expired
   evidence, scoped exceptions, and repeated ambiguity, then completion evidence.
-- Bind evaluation time to observed evidence and define validated semantic
-  version-range interpretation; current source-revision matching is exact-value
-  only.
+- Define validated semantic version-range interpretation; current
+  source-revision matching is exact-value only.
 
 ### Roadmap addition — concurrent multi-runtime monitoring
 
