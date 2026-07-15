@@ -41,11 +41,11 @@ versioned operator rulings when overlap remains ambiguous.
 - `bar-store` migration `0008` adds immutable scope-context evidence bound to a
   target, revision, observed timestamp, and complete inventoried artifact. The
   whole-artifact digest remains independently verifiable until excerpt evidence
-  storage lands. Persistence is replay-idempotent and atomically audited;
-  cross-target references, invalid spans/digests, blank values, malformed JSON,
-  and negative stored observation times fail closed. A caller-supplied source
-  revision cannot override stored revision identity, and snapshots reload after
-  database reopen.
+  storage lands. Persistence revalidates stored evidence before accepting a
+  replay and is atomically audited; cross-target references, invalid
+  spans/digests, blank values, malformed JSON, and negative stored observation
+  times fail closed. A caller-supplied source revision cannot override stored
+  revision identity, and snapshots reload after database reopen.
 - `bar-contract::ruling` and `bar-store` migration `0009` add immutable,
   source-context-bound operator rulings. The store validates contract and
   evidence target ownership plus complete source-context integrity before create
@@ -80,7 +80,7 @@ versioned operator rulings when overlap remains ambiguous.
   versions resolve as ambiguous rather than selecting a contract.
 
 All 113 repository tests pass; clippy `-D warnings` and fmt are clean.
-Implementation revisions: `5a9b3ef`, `f9e71af`, `414be5c`, `15adcfd`, `ed0f016`, `2054c8d`, `a93a672`, `5483b93`, `3e63c89`, `ee9b01d`, `1862d2e`, `1c21194`, `d3d4c2a`, `3ec5aa9`, `37b3642`, `3696360`.
+Implementation revisions: `5a9b3ef`, `f9e71af`, `414be5c`, `15adcfd`, `ed0f016`, `2054c8d`, `a93a672`, `5483b93`, `3e63c89`, `ee9b01d`, `1862d2e`, `1c21194`, `d3d4c2a`, `3ec5aa9`, `37b3642`, `3696360`, `d0d8480`.
 
 ### Remaining before Phase 4 completion
 
