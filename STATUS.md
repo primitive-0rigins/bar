@@ -55,9 +55,14 @@ versioned operator rulings when overlap remains ambiguous.
   scope-context observation time and requires the contract and context evidence
   to belong to the same target. Callers can no longer reuse one evidence record
   with a substituted earlier or later evaluation time.
+- `fixtures/phase-4-resolution/expected.json` is a checked-in adversarial
+  resolver corpus. Its strict, table-driven test covers both precedence
+  directions, scoped exceptions, repeated ambiguity, missing context,
+  feature-flag scope, expired/future windows, malformed temporal declarations,
+  and inactive historical text.
 
-All 111 repository tests pass; clippy `-D warnings` and fmt are clean.
-Implementation revisions: `5a9b3ef`, `f9e71af`, `414be5c`, `15adcfd`, `ed0f016`, `2054c8d`.
+All 112 repository tests pass; clippy `-D warnings` and fmt are clean.
+Implementation revisions: `5a9b3ef`, `f9e71af`, `414be5c`, `15adcfd`, `ed0f016`, `2054c8d`, `a93a672`.
 
 ### Remaining before Phase 4 completion
 
@@ -68,8 +73,8 @@ Implementation revisions: `5a9b3ef`, `f9e71af`, `414be5c`, `15adcfd`, `ed0f016`,
 - Model the remaining operator dispositions (defer, reject, and request more
   evidence). The durable ruling core currently captures a chosen interpretation
   and its rejected alternatives; the dashboard/API workflow is Phase 8.
-- Add Phase 4 adversarial fixtures for overlapping scopes, late/expired
-  evidence, scoped exceptions, and repeated ambiguity, then completion evidence.
+- Obtain human review and write Phase 4 completion evidence after the remaining
+  scope semantics are complete.
 - Define validated semantic version-range interpretation; current
   source-revision matching is exact-value only.
 
