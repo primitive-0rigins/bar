@@ -54,6 +54,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "bar-contract"
+version = "0.0.0"
+dependencies = [
+ "bar-core",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "bar-core"
 version = "0.0.0"
 dependencies = [
@@ -86,6 +96,7 @@ name = "bar-store"
 version = "0.0.0"
 dependencies = [
  "bar-audit",
+ "bar-contract",
  "bar-core",
  "bar-discovery",
  "bar-target",

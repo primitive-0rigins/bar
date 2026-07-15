@@ -39,6 +39,8 @@ pub enum AuditCategory {
     Access,
     /// A workflow lifecycle transition.
     LifecycleTransition,
+    /// Evidence, contract, or derived-assurance state was added or invalidated.
+    EvidenceMutation,
 }
 
 impl AuditCategory {
@@ -51,6 +53,7 @@ impl AuditCategory {
             AuditCategory::Ruling => "ruling",
             AuditCategory::Access => "access",
             AuditCategory::LifecycleTransition => "lifecycle_transition",
+            AuditCategory::EvidenceMutation => "evidence_mutation",
         }
     }
 
@@ -63,6 +66,7 @@ impl AuditCategory {
             "ruling" => AuditCategory::Ruling,
             "access" => AuditCategory::Access,
             "lifecycle_transition" => AuditCategory::LifecycleTransition,
+            "evidence_mutation" => AuditCategory::EvidenceMutation,
             other => return Err(Error::Parse(format!("unknown audit category: {other}"))),
         })
     }
@@ -214,6 +218,16 @@ impl AuditChain {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn evidence_mutation_category_round_trips() {
+        let token = AuditCategory::EvidenceMutation.as_str();
+        assert_eq!(token, "evidence_mutation");
+        assert_eq!(
+            AuditCategory::from_token(token).unwrap(),
+            AuditCategory::EvidenceMutation
+        );
+    }
 
     fn event(summary: &str) -> AuditEvent {
         AuditEvent {

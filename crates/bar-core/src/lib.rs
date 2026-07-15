@@ -13,5 +13,6 @@ pub mod enums;
 pub mod error;
 pub mod ids;
 
+pub use enums::{ContractLevel, NormativeKind};
 pub use error::{Error, Result, Retryability};
-pub use ids::{ArtifactId, RevisionId, Sha256Digest, TargetId};
+pub use ids::{ArtifactId, ContractId, RevisionId, Sha256Digest, TargetId};

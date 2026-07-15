@@ -17,7 +17,10 @@ use std::collections::HashMap;
 use std::str::FromStr;
 
 use bar_audit::{record_hash, AuditCategory, AuditChain, AuditEvent, AuditRecord, GENESIS};
-use bar_core::{Error, Result, RevisionId, Sha256Digest, TargetId};
+use bar_contract::{ExtractedClaim, SourceRef};
+use bar_core::{
+    ContractId, ContractLevel, Error, NormativeKind, Result, RevisionId, Sha256Digest, TargetId,
+};
 use bar_discovery::dependency::ArtifactDependency;
 use bar_discovery::{ArtifactKind, Inventory, PriorArtifact, PriorInventory};
 use bar_target::{ConnectorKind, ResolvedTarget, RevisionIdentity, TargetStatus};
@@ -402,6 +405,140 @@ impl Store {
             })
             .collect()
     }
+
+    /// Persists source-bound shadow contract candidates idempotently. Every
+    /// newly inserted contract and its source reference share one transaction
+    /// with the `contract.extracted` audit event.
+    pub async fn persist_contracts(
+        &self,
+        target_id: &TargetId,
+        revision_id: &RevisionId,
+        claims: &[ExtractedClaim],
+        now_ms: u64,
+    ) -> Result<ContractPersistence> {
+        let mut tx = self.pool.begin().await.map_err(storage("begin"))?;
+        let revision_exists: i64 = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM target_revisions \
+             WHERE revision_id = ? AND target_id = ?)",
+        )
+        .bind(revision_id.to_string())
+        .bind(target_id.to_string())
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(storage("check contract revision"))?;
+        if revision_exists == 0 {
+            return Err(Error::Corrupt(format!(
+                "contracts reference unknown target revision {revision_id}"
+            )));
+        }
+
+        let artifact_ids: Vec<String> =
+            sqlx::query_scalar("SELECT artifact_id FROM artifacts WHERE revision_id = ?")
+                .bind(revision_id.to_string())
+                .fetch_all(&mut *tx)
+                .await
+                .map_err(storage("load contract artifacts"))?;
+        let artifact_ids: std::collections::HashSet<_> = artifact_ids.into_iter().collect();
+        let mut contract_ids = Vec::with_capacity(claims.len());
+        let mut inserted = 0;
+
+        for claim in claims {
+            if !artifact_ids.contains(&claim.source.artifact_id.to_string()) {
+                return Err(Error::Corrupt(format!(
+                    "contract source {} does not belong to {revision_id}",
+                    claim.source.artifact_id
+                )));
+            }
+            let fingerprint = claim.fingerprint.to_string();
+            let existing: Option<String> = sqlx::query_scalar(
+                "SELECT contract_id FROM contracts \
+                 WHERE target_id = ? AND revision_id = ? AND fingerprint = ?",
+            )
+            .bind(target_id.to_string())
+            .bind(revision_id.to_string())
+            .bind(&fingerprint)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(storage("lookup contract"))?;
+
+            let contract_id = match existing {
+                Some(id) => id.parse()?,
+                None => {
+                    let id = ContractId::generate();
+                    sqlx::query(
+                        "INSERT INTO contracts \
+                         (contract_id, target_id, revision_id, parent_contract_id, level, \
+                          normative_kind, statement, scope_json, confidence, freshness, status, \
+                          fingerprint, created_at_ms, version) \
+                         VALUES (?, ?, ?, NULL, ?, ?, ?, '{}', 'low', 'fresh', 'discovered', ?, ?, 1)",
+                    )
+                    .bind(id.to_string())
+                    .bind(target_id.to_string())
+                    .bind(revision_id.to_string())
+                    .bind(claim.level.as_str())
+                    .bind(claim.normative_kind.as_str())
+                    .bind(&claim.statement)
+                    .bind(&fingerprint)
+                    .bind(now_ms as i64)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(storage("insert contract"))?;
+
+                    sqlx::query(
+                        "INSERT INTO contract_sources \
+                         (contract_id, artifact_id, start_offset, end_offset, exact_text_sha256) \
+                         VALUES (?, ?, ?, ?, ?)",
+                    )
+                    .bind(id.to_string())
+                    .bind(claim.source.artifact_id.to_string())
+                    .bind(claim.source.start_offset as i64)
+                    .bind(claim.source.end_offset as i64)
+                    .bind(claim.source.exact_text_sha256.to_string())
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(storage("insert contract source"))?;
+
+                    append_audit(
+                        &mut tx,
+                        AuditEvent {
+                            category: AuditCategory::EvidenceMutation,
+                            actor: SYSTEM_ACTOR.to_string(),
+                            summary: "extracted source-bound shadow contract".into(),
+                            subject: Some(id.to_string()),
+                            occurred_at_ms: now_ms,
+                        },
+                    )
+                    .await?;
+                    inserted += 1;
+                    id
+                }
+            };
+            contract_ids.push(contract_id);
+        }
+
+        tx.commit().await.map_err(storage("commit"))?;
+        Ok(ContractPersistence {
+            contract_ids,
+            inserted,
+        })
+    }
+
+    /// Reloads source-bound shadow contracts for a revision. Unknown persisted
+    /// enum/status tokens are rejected rather than activated.
+    pub async fn load_contracts(&self, revision_id: &RevisionId) -> Result<Vec<StoredContract>> {
+        let rows: Vec<ContractRow> = sqlx::query_as(
+            "SELECT c.contract_id, c.level, c.normative_kind, c.statement, c.fingerprint, \
+                    c.confidence, c.freshness, c.status, s.artifact_id, s.start_offset, \
+                    s.end_offset, s.exact_text_sha256 \
+             FROM contracts c JOIN contract_sources s ON s.contract_id = c.contract_id \
+             WHERE c.revision_id = ? ORDER BY c.contract_id, s.start_offset",
+        )
+        .bind(revision_id.to_string())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(storage("load contracts"))?;
+        rows.into_iter().map(ContractRow::into_contract).collect()
+    }
 }
 
 fn missing_dependency_artifact(revision_id: &RevisionId, path: &str) -> Error {
@@ -489,6 +626,20 @@ pub struct RevisionRecord {
     pub newly_recorded: bool,
 }
 
+/// Result of an idempotent contract-persistence call.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContractPersistence {
+    pub contract_ids: Vec<ContractId>,
+    pub inserted: usize,
+}
+
+/// One persisted shadow contract with its mandatory source binding.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredContract {
+    pub contract_id: ContractId,
+    pub claim: ExtractedClaim,
+}
+
 /// A registered target as stored.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TargetRecord {
@@ -542,6 +693,72 @@ struct DependencyRow {
     dependent_path: String,
     dependency_path: String,
     relation_kind: String,
+}
+
+#[derive(FromRow)]
+struct ContractRow {
+    contract_id: String,
+    level: String,
+    normative_kind: String,
+    statement: String,
+    fingerprint: String,
+    confidence: String,
+    freshness: String,
+    status: String,
+    artifact_id: String,
+    start_offset: i64,
+    end_offset: i64,
+    exact_text_sha256: String,
+}
+
+impl ContractRow {
+    fn into_contract(self) -> Result<StoredContract> {
+        if self.confidence != "low" || self.freshness != "fresh" || self.status != "discovered" {
+            return Err(Error::Corrupt(format!(
+                "unknown shadow contract state: confidence={}, freshness={}, status={}",
+                self.confidence, self.freshness, self.status
+            )));
+        }
+        let level = ContractLevel::VARIANTS
+            .iter()
+            .copied()
+            .find(|value| value.as_str() == self.level)
+            .ok_or_else(|| Error::Corrupt(format!("unknown contract level `{}`", self.level)))?;
+        let normative_kind = NormativeKind::VARIANTS
+            .iter()
+            .copied()
+            .find(|value| value.as_str() == self.normative_kind)
+            .ok_or_else(|| {
+                Error::Corrupt(format!(
+                    "unknown contract normative kind `{}`",
+                    self.normative_kind
+                ))
+            })?;
+        let start_offset = usize::try_from(self.start_offset)
+            .map_err(|_| Error::Corrupt("negative contract source start offset".into()))?;
+        let end_offset = usize::try_from(self.end_offset)
+            .map_err(|_| Error::Corrupt("negative contract source end offset".into()))?;
+        if start_offset >= end_offset {
+            return Err(Error::Corrupt(
+                "invalid persisted contract source span".into(),
+            ));
+        }
+        Ok(StoredContract {
+            contract_id: self.contract_id.parse()?,
+            claim: ExtractedClaim {
+                normative_kind,
+                level,
+                statement: self.statement,
+                source: SourceRef {
+                    artifact_id: self.artifact_id.parse()?,
+                    start_offset,
+                    end_offset,
+                    exact_text_sha256: self.exact_text_sha256.parse()?,
+                },
+                fingerprint: self.fingerprint.parse()?,
+            },
+        })
+    }
 }
 
 impl ArtifactRow {
@@ -1075,6 +1292,135 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(count, 0, "the partial graph transaction rolled back");
+    }
+
+    #[tokio::test]
+    async fn source_bound_contracts_persist_idempotently_and_reload() {
+        use bar_contract::{extract_deterministic, ArtifactText};
+
+        let repo = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(repo.path()).unwrap();
+        let text = "All effects MUST pass through the dispatcher.\nThe daemon MUST NOT deploy.";
+        write_file(&root, "README.md", text.as_bytes());
+
+        let (store, _dir) = temp_store().await;
+        let target_id = store
+            .register_target(&tree_target(&root), T0)
+            .await
+            .unwrap()
+            .target_id;
+        let revision_id = store
+            .record_revision(&target_id, &revision("c", None), T0)
+            .await
+            .unwrap()
+            .revision_id;
+        let inventory = bar_discovery::scan(
+            &root,
+            &bar_discovery::ScanConfig::default(),
+            &PriorInventory::new(),
+        )
+        .unwrap();
+        store
+            .persist_inventory(&target_id, &revision_id, &inventory, T0)
+            .await
+            .unwrap();
+        let artifact = &inventory.artifacts[0];
+        let source = ArtifactText::new(
+            artifact.artifact_id(&revision_id),
+            &artifact.logical_path,
+            artifact.content_sha256.parse().unwrap(),
+            text,
+        )
+        .unwrap();
+        let claims = extract_deterministic(&source).unwrap();
+        assert_eq!(claims.len(), 2);
+
+        let first = store
+            .persist_contracts(&target_id, &revision_id, &claims, T0 + 1)
+            .await
+            .unwrap();
+        let replay = store
+            .persist_contracts(&target_id, &revision_id, &claims, T0 + 2)
+            .await
+            .unwrap();
+        assert_eq!(first.inserted, 2);
+        assert_eq!(replay.inserted, 0);
+        assert_eq!(first.contract_ids, replay.contract_ids);
+
+        let mut loaded = store.load_contracts(&revision_id).await.unwrap();
+        loaded.sort_by_key(|contract| contract.claim.source.start_offset);
+        assert_eq!(
+            loaded
+                .iter()
+                .map(|contract| contract.claim.clone())
+                .collect::<Vec<_>>(),
+            claims
+        );
+        let chain = store.load_audit_chain().await.unwrap();
+        chain.verify().unwrap();
+        assert_eq!(chain.len(), 6, "replay emits no duplicate contract events");
+
+        sqlx::query(
+            "UPDATE contracts SET normative_kind = 'unknown' \
+             WHERE contract_id = (SELECT contract_id FROM contracts LIMIT 1)",
+        )
+        .execute(&store.pool)
+        .await
+        .unwrap();
+        assert!(store.load_contracts(&revision_id).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn contract_persistence_rolls_back_when_any_source_is_missing() {
+        use bar_contract::{extract_deterministic, ArtifactText};
+
+        let repo = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(repo.path()).unwrap();
+        let text = "The daemon MUST remain model-optional.";
+        write_file(&root, "README.md", text.as_bytes());
+        let (store, _dir) = temp_store().await;
+        let target_id = store
+            .register_target(&tree_target(&root), T0)
+            .await
+            .unwrap()
+            .target_id;
+        let revision_id = store
+            .record_revision(&target_id, &revision("c", None), T0)
+            .await
+            .unwrap()
+            .revision_id;
+        let inventory = bar_discovery::scan(
+            &root,
+            &bar_discovery::ScanConfig::default(),
+            &PriorInventory::new(),
+        )
+        .unwrap();
+        store
+            .persist_inventory(&target_id, &revision_id, &inventory, T0)
+            .await
+            .unwrap();
+        let artifact = &inventory.artifacts[0];
+        let source = ArtifactText::new(
+            artifact.artifact_id(&revision_id),
+            &artifact.logical_path,
+            artifact.content_sha256.parse().unwrap(),
+            text,
+        )
+        .unwrap();
+        let valid = extract_deterministic(&source).unwrap().remove(0);
+        let mut missing = valid.clone();
+        missing.source.artifact_id =
+            bar_core::ArtifactId::from_digest(Sha256Digest::from_bytes([9; 32]));
+
+        assert!(store
+            .persist_contracts(&target_id, &revision_id, &[valid, missing], T0 + 1)
+            .await
+            .is_err());
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM contracts")
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 0, "the partial contract transaction rolled back");
     }
 
     fn git_available() -> bool {
