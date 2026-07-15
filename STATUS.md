@@ -27,6 +27,10 @@ conflict candidates, and treats optional-model output as untrusted data.
 - Direct required/prohibited opposites produce provisional conflict candidates
   only when their normalized subject is identical. Same-direction claims and
   different subjects do not conflict, and neither side is selected or promoted.
+- Revision-level corpus analysis deterministically combines artifact results,
+  deduplicates source-bound fingerprints, detects direct conflicts across
+  artifacts, and preserves competing glossary definitions as explicit
+  ambiguity candidates instead of silently selecting or merging one.
 - Every extracted claim carries an `ArtifactId`, exact UTF-8 byte offsets, and a
   SHA-256 of the exact cited bytes. `ArtifactText` first verifies the complete
   text against the discovery inventory hash, so extraction cannot silently bind
@@ -42,22 +46,29 @@ conflict candidates, and treats optional-model output as untrusted data.
   each newly extracted contract as an audited evidence mutation in the same
   transaction. A missing source rolls back the full contract batch; unknown
   persisted vocabulary/state is rejected during reload.
+- `bar-store`: migration `0006` adds durable structural hierarchy, glossary,
+  and provisional conflict candidates. Candidate persistence validates all
+  contract and artifact references before writing, is replay-idempotent, and
+  audits newly detected conflicts atomically. Reload rejects corrupt aliases,
+  spans, hashes, heading levels, and unknown conflict states; glossary
+  ambiguities are reconstructed from the preserved definitions.
 
 The implemented slice passes the two Phase 3 safety invariants: every emitted
 claim cites verified source bytes, and malformed or source-inconsistent model
-output is rejected. The full phase is not complete. All 88 repository tests
+output is rejected. The full phase is not complete. All 91 repository tests
 pass; clippy `-D warnings` and fmt are clean. Implementation revisions:
-`3fb0fc6`, `74e1408`, and `85fff4d`.
+`3fb0fc6`, `74e1408`, `85fff4d`, and `b483f02`.
 
 ### Remaining before Phase 3 completion
 
 - Multiline HTML/comment blocks, blockquotes, and additional prose formats.
 - Explicit-reference hierarchy and semantic hierarchy proposals; current
   attachment is structural Markdown containment only.
-- Cross-artifact glossary/alias graph, structural corroboration, and operator
-  correction inputs; current candidates come from explicit local definitions.
-- Cross-artifact/scope-aware conflict generation and persistence; current
-  candidates cover direct opposites within one analyzed artifact.
+- Glossary/alias graph corroboration and operator correction inputs;
+  cross-artifact ambiguity is durable, but aliases still come only from
+  explicit definitions and no terms are merged automatically.
+- Scope- and temporal-aware conflict generation; direct cross-artifact
+  required/prohibited opposites are now durable candidates.
 - Optional worker integration and its explicit disabled/unavailable runtime
   state; current code validates bounded output but invokes no model.
 - Canonical fixture/golden-corpus coverage and Phase 3 completion evidence.
