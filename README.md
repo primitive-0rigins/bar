@@ -9,8 +9,10 @@ connected coding agent, and then independently verifies the result.
 > **Status:** Phase 4 — contract scope, temporal resolution, and adjudication,
 > in progress. The pure applicability resolver implements closed fail-safe
 > states, inclusive validity windows, documented scope precedence, and mandatory
-> adjudication for ties or unknown context. Phase 3 extraction is implementation
-> complete and pending human review. Build progresses through
+> adjudication for ties or unknown context. Scope, validity, and supersession
+> inputs now persist transactionally and reload into that resolver; contextual
+> applicability remains derived. Phase 3 extraction is implementation complete
+> and pending human review. Build progresses through
 > the phased manual in [`docs/spec.md`](docs/spec.md) §21. See [`STATUS.md`](STATUS.md)
 > for the current state and remaining Phase 4 work.
 

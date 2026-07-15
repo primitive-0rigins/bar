@@ -26,14 +26,22 @@ versioned operator rulings when overlap remains ambiguous.
   clearly outranks the other. Equal, unranked, malformed, or context-unknown
   overlap returns `adjudication_required`; the resolver exposes no automatic
   definitive-defect state.
+- `bar-store` migration `0007` adds immutable scope/validity declarations and
+  directed same-target supersession edges. The first assignment and every new
+  edge are audited atomically; exact replay is a no-op, changed declarations
+  are rejected, and an invalid edge rolls back the complete transaction.
+- Resolution inputs reload after database reopen into the pure resolver.
+  Incoming supersession edges derive `TemporalWindow::superseded`; scope JSON,
+  inverted/negative timestamps, unknown scope state, and out-of-range external
+  millisecond values fail closed. Applicability remains deliberately derived
+  from durable declarations plus evidence-bound context instead of being
+  stored as stale context-free state.
 
-All 100 repository tests pass; clippy `-D warnings` and fmt are clean.
-Implementation revision: `5a9b3ef`.
+All 101 repository tests pass; clippy `-D warnings` and fmt are clean.
+Implementation revisions: `5a9b3ef`, `f9e71af`.
 
 ### Remaining before Phase 4 completion
 
-- Persist and reload scope, validity, applicability, and supersession with
-  migration replay, idempotency, rollback, and unknown-state tests.
 - Bind `ScopeContext` to observed revision, deployment, environment,
   configuration, component, mode, flags, and tenant evidence rather than
   caller-supplied values alone.
@@ -41,9 +49,9 @@ Implementation revision: `5a9b3ef`.
   and deterministic reuse while scope/evidence is unchanged.
 - Add Phase 4 adversarial fixtures for overlapping scopes, late/expired
   evidence, scoped exceptions, and repeated ambiguity, then completion evidence.
-- Convert external timestamps/ranges into the resolver's millisecond/exact-value
-  representation at a validated boundary; semantic version ranges are not yet
-  interpreted.
+- Bind evaluation time to observed evidence and define validated semantic
+  version-range interpretation; current source-revision matching is exact-value
+  only.
 
 ## Phase 3 — Contract extraction shadow (implementation complete)
 
