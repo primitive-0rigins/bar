@@ -268,9 +268,17 @@ struct OpenParagraph {
     heading: Option<HeadingContext>,
 }
 
+#[derive(Debug)]
+struct OpenComment {
+    start: usize,
+    closing: &'static str,
+    heading: Option<HeadingContext>,
+}
+
 fn segment_document(artifact: &ArtifactText) -> Vec<Segment> {
     let mut segments = Vec::new();
     let mut paragraph = None;
+    let mut comment: Option<OpenComment> = None;
     let mut heading = None;
     let mut fence = None;
     let mut line_start = 0;
@@ -279,6 +287,22 @@ fn segment_document(artifact: &ArtifactText) -> Vec<Segment> {
         let content = line.trim_end_matches(['\r', '\n']);
         let (trim_start, trim_end) = trimmed_bounds(content);
         let trimmed = &content[trim_start..trim_end];
+
+        if let Some(open) = comment.take() {
+            if let Some(closing_start) = content.find(open.closing) {
+                push_prose_segments(
+                    &mut segments,
+                    &artifact.text,
+                    open.start,
+                    line_start + closing_start,
+                    open.heading,
+                );
+            } else {
+                comment = Some(open);
+            }
+            line_start += line.len();
+            continue;
+        }
 
         let fence_marker = if trimmed.starts_with("```") {
             Some(b'`')
@@ -312,12 +336,30 @@ fn segment_document(artifact: &ArtifactText) -> Vec<Segment> {
                 level,
                 source: source_ref(artifact, start, end),
             });
-        } else if let Some((inner_start, inner)) = html_comment_segment(trimmed) {
+        } else if let Some((marker_len, closing)) = comment_block_start(trimmed) {
             flush_paragraph(&mut segments, &mut paragraph, &artifact.text);
-            let start = line_start + trim_start + inner_start;
+            let start = line_start + trim_start + marker_len;
+            if let Some(closing_start) = trimmed[marker_len..].find(closing) {
+                push_prose_segments(
+                    &mut segments,
+                    &artifact.text,
+                    start,
+                    start + closing_start,
+                    heading.clone(),
+                );
+            } else {
+                comment = Some(OpenComment {
+                    start,
+                    closing,
+                    heading: heading.clone(),
+                });
+            }
+        } else if let Some((quote_start, quote)) = blockquote_segment(trimmed) {
+            flush_paragraph(&mut segments, &mut paragraph, &artifact.text);
+            let start = line_start + trim_start + quote_start;
             segments.push(Segment {
                 start,
-                end: start + inner.len(),
+                end: start + quote.len(),
                 heading: heading.clone(),
             });
         } else if is_table_row(trimmed) {
@@ -373,33 +415,37 @@ fn flush_paragraph(
     document: &str,
 ) {
     if let Some(open) = paragraph.take() {
-        let paragraph_text = &document[open.start..open.end];
-        let mut sentence_start = 0;
-        for (index, ch) in paragraph_text.char_indices() {
-            let boundary = matches!(ch, '.' | '?' | '!')
-                && paragraph_text[index + ch.len_utf8()..]
-                    .chars()
-                    .next()
-                    .is_some_and(char::is_whitespace);
-            if boundary {
-                push_sentence(
-                    segments,
-                    document,
-                    open.start + sentence_start,
-                    open.start + index + ch.len_utf8(),
-                    open.heading.clone(),
-                );
-                sentence_start = index + ch.len_utf8();
-            }
-        }
-        push_sentence(
-            segments,
-            document,
-            open.start + sentence_start,
-            open.end,
-            open.heading,
-        );
+        push_prose_segments(segments, document, open.start, open.end, open.heading);
     }
+}
+
+fn push_prose_segments(
+    segments: &mut Vec<Segment>,
+    document: &str,
+    start: usize,
+    end: usize,
+    heading: Option<HeadingContext>,
+) {
+    let text = &document[start..end];
+    let mut sentence_start = 0;
+    for (index, ch) in text.char_indices() {
+        let boundary = matches!(ch, '.' | '?' | '!')
+            && text[index + ch.len_utf8()..]
+                .chars()
+                .next()
+                .is_some_and(char::is_whitespace);
+        if boundary {
+            push_sentence(
+                segments,
+                document,
+                start + sentence_start,
+                start + index + ch.len_utf8(),
+                heading.clone(),
+            );
+            sentence_start = index + ch.len_utf8();
+        }
+    }
+    push_sentence(segments, document, start + sentence_start, end, heading);
 }
 
 fn push_sentence(
@@ -435,11 +481,31 @@ fn heading_segment(text: &str) -> Option<(u8, usize, &str)> {
     (!heading.is_empty()).then_some((hashes as u8, hashes + 1, heading))
 }
 
-fn html_comment_segment(text: &str) -> Option<(usize, &str)> {
-    let inner = text.strip_prefix("<!--")?.strip_suffix("-->")?;
-    let leading = inner.len() - inner.trim_start().len();
-    let value = inner.trim();
-    (!value.is_empty()).then_some((4 + leading, value))
+fn comment_block_start(text: &str) -> Option<(usize, &'static str)> {
+    if text.starts_with("<!--") {
+        Some((4, "-->"))
+    } else if text.starts_with("/*") {
+        Some((2, "*/"))
+    } else {
+        None
+    }
+}
+
+fn blockquote_segment(text: &str) -> Option<(usize, &str)> {
+    let mut offset = 0;
+    let mut rest = text;
+    let mut found = false;
+    while let Some(after_marker) = rest.strip_prefix('>') {
+        found = true;
+        offset += 1;
+        rest = after_marker;
+        if let Some(after_space) = rest.strip_prefix(' ') {
+            offset += 1;
+            rest = after_space;
+        }
+    }
+    let value = rest.trim_end();
+    (found && !value.is_empty()).then_some((offset, value))
 }
 
 fn line_comment_segment(text: &str) -> Option<(usize, &str)> {
@@ -944,6 +1010,36 @@ mod tests {
             analysis.claims[0].statement,
             "The daemon MUST remain model-optional."
         );
+    }
+
+    #[test]
+    fn multiline_comment_blocks_and_blockquotes_preserve_exact_sources() {
+        let text = "# Policy\n\n<!--\nThe daemon MUST remain model-optional.\nWorkers should stop promptly.\n-->\n\n/*\nThe dispatcher MUST gate effects.\n*/\n\n> > The queue MUST NOT drop approved work.\n\n<!-- The unfinished claim MUST stay ignored.\n";
+        let analysis = analyze_document(&artifact(text)).unwrap();
+
+        assert_eq!(analysis.claims.len(), 4);
+        assert_eq!(
+            analysis
+                .claims
+                .iter()
+                .map(|claim| claim.statement.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "The daemon MUST remain model-optional.",
+                "Workers should stop promptly.",
+                "The dispatcher MUST gate effects.",
+                "The queue MUST NOT drop approved work.",
+            ]
+        );
+        for claim in &analysis.claims {
+            let exact = &text[claim.source.start_offset..claim.source.end_offset];
+            assert_eq!(exact, claim.statement);
+            assert_eq!(digest(exact.as_bytes()), claim.source.exact_text_sha256);
+        }
+        assert!(analysis
+            .hierarchy
+            .iter()
+            .all(|candidate| candidate.heading == "Policy"));
     }
 
     #[test]
