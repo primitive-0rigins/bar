@@ -371,6 +371,65 @@ fn scope_is_valid(scope: &ContractScope) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde::Deserialize;
+
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct ResolutionFixture {
+        resolver_cases: Vec<ResolutionFixtureCase>,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct ResolutionFixtureCase {
+        name: String,
+        left: FixtureContract,
+        right: FixtureContract,
+        context: ScopeContext,
+        at_ms: u64,
+        #[serde(default = "one")]
+        repeat: usize,
+        expected: String,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct FixtureContract {
+        scope: ContractScope,
+        temporal: TemporalWindow,
+        normative_kind: String,
+    }
+
+    fn one() -> usize {
+        1
+    }
+
+    fn fixture_contract(input: &FixtureContract) -> ScopedContract<'_> {
+        let normative_kind = NormativeKind::VARIANTS
+            .iter()
+            .copied()
+            .find(|kind| kind.as_str() == input.normative_kind)
+            .unwrap_or_else(|| panic!("unknown fixture normative kind {}", input.normative_kind));
+        ScopedContract {
+            scope: &input.scope,
+            temporal: &input.temporal,
+            normative_kind,
+        }
+    }
+
+    fn expected_disposition(expected: &str) -> ConflictDisposition {
+        match expected {
+            "inactive" => ConflictDisposition::Inactive,
+            "scoped_override_left" => ConflictDisposition::ScopedOverride {
+                preferred: ConflictSide::Left,
+            },
+            "scoped_override_right" => ConflictDisposition::ScopedOverride {
+                preferred: ConflictSide::Right,
+            },
+            "adjudication_required" => ConflictDisposition::AdjudicationRequired,
+            other => panic!("unknown fixture disposition {other}"),
+        }
+    }
 
     fn required<'a>(scope: &'a ContractScope, temporal: &'a TemporalWindow) -> ScopedContract<'a> {
         ScopedContract {
@@ -403,6 +462,36 @@ mod tests {
             ..ScopeContext::default()
         })
         .is_err());
+    }
+
+    #[test]
+    fn phase_four_resolution_corpus_is_fail_safe() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/phase-4-resolution/expected.json");
+        let fixture: ResolutionFixture =
+            serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        assert!(
+            fixture.resolver_cases.len() >= 9,
+            "the reviewed Phase 4 corpus must retain all adversarial cases"
+        );
+
+        for case in fixture.resolver_cases {
+            assert!(case.repeat > 0, "fixture {} has zero repeats", case.name);
+            let expected = expected_disposition(&case.expected);
+            for _ in 0..case.repeat {
+                assert_eq!(
+                    resolve_conflict(
+                        fixture_contract(&case.left),
+                        fixture_contract(&case.right),
+                        &case.context,
+                        case.at_ms,
+                    ),
+                    expected,
+                    "fixture {}",
+                    case.name
+                );
+            }
+        }
     }
 
     #[test]

@@ -1,0 +1,184 @@
+{
+  "resolver_cases": [
+    {
+      "name": "scoped_deployment_exception_overrides_product_rule",
+      "left": {
+        "scope": {},
+        "temporal": {},
+        "normative_kind": "required"
+      },
+      "right": {
+        "scope": {
+          "deployments": ["production"],
+          "configurations": ["blue"]
+        },
+        "temporal": {},
+        "normative_kind": "prohibited"
+      },
+      "context": {
+        "deployment": "production",
+        "configuration": "blue"
+      },
+      "at_ms": 100,
+      "expected": "scoped_override_right"
+    },
+    {
+      "name": "specific_product_property_overrides_product_wide_exception",
+      "left": {
+        "scope": {
+          "environments": ["production"],
+          "components": ["payments"]
+        },
+        "temporal": {},
+        "normative_kind": "required"
+      },
+      "right": {
+        "scope": {},
+        "temporal": {},
+        "normative_kind": "prohibited"
+      },
+      "context": {
+        "environment": "production",
+        "component": "payments"
+      },
+      "at_ms": 100,
+      "expected": "scoped_override_left"
+    },
+    {
+      "name": "equal_product_rules_remain_ambiguous_on_repeat",
+      "left": {
+        "scope": {},
+        "temporal": {},
+        "normative_kind": "required"
+      },
+      "right": {
+        "scope": {},
+        "temporal": {},
+        "normative_kind": "prohibited"
+      },
+      "context": {},
+      "at_ms": 100,
+      "repeat": 2,
+      "expected": "adjudication_required"
+    },
+    {
+      "name": "missing_deployment_context_cannot_select_scoped_exception",
+      "left": {
+        "scope": {},
+        "temporal": {},
+        "normative_kind": "required"
+      },
+      "right": {
+        "scope": {
+          "deployments": ["production"]
+        },
+        "temporal": {},
+        "normative_kind": "prohibited"
+      },
+      "context": {},
+      "at_ms": 100,
+      "expected": "adjudication_required"
+    },
+    {
+      "name": "late_evidence_after_scoped_exception_expiry_is_inactive",
+      "left": {
+        "scope": {},
+        "temporal": {},
+        "normative_kind": "required"
+      },
+      "right": {
+        "scope": {
+          "deployments": ["production"]
+        },
+        "temporal": {
+          "valid_until_ms": 99
+        },
+        "normative_kind": "prohibited"
+      },
+      "context": {
+        "deployment": "production"
+      },
+      "at_ms": 100,
+      "expected": "inactive"
+    },
+    {
+      "name": "future_scoped_exception_is_inactive_before_its_window",
+      "left": {
+        "scope": {},
+        "temporal": {},
+        "normative_kind": "required"
+      },
+      "right": {
+        "scope": {
+          "feature_flags": ["new_dispatcher"]
+        },
+        "temporal": {
+          "valid_from_ms": 101
+        },
+        "normative_kind": "prohibited"
+      },
+      "context": {
+        "feature_flags": ["new_dispatcher"]
+      },
+      "at_ms": 100,
+      "expected": "inactive"
+    },
+    {
+      "name": "missing_feature_flag_context_requires_adjudication",
+      "left": {
+        "scope": {},
+        "temporal": {},
+        "normative_kind": "required"
+      },
+      "right": {
+        "scope": {
+          "feature_flags": ["new_dispatcher"]
+        },
+        "temporal": {},
+        "normative_kind": "prohibited"
+      },
+      "context": {},
+      "at_ms": 100,
+      "expected": "adjudication_required"
+    },
+    {
+      "name": "malformed_temporal_window_never_selects_a_rule",
+      "left": {
+        "scope": {
+          "modes": ["maintenance"]
+        },
+        "temporal": {
+          "valid_from_ms": 101,
+          "valid_until_ms": 100
+        },
+        "normative_kind": "required"
+      },
+      "right": {
+        "scope": {},
+        "temporal": {},
+        "normative_kind": "prohibited"
+      },
+      "context": {
+        "mode": "maintenance"
+      },
+      "at_ms": 100,
+      "expected": "adjudication_required"
+    },
+    {
+      "name": "historical_contract_never_overrides_active_contract",
+      "left": {
+        "scope": {},
+        "temporal": {},
+        "normative_kind": "historical"
+      },
+      "right": {
+        "scope": {},
+        "temporal": {},
+        "normative_kind": "required"
+      },
+      "context": {},
+      "at_ms": 100,
+      "expected": "inactive"
+    }
+  ]
+}
