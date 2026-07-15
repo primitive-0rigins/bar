@@ -5,6 +5,7 @@ use bar_core::{ArtifactId, ContractLevel, Error, NormativeKind, Result, Sha256Di
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
+pub mod ruling;
 pub mod scope;
 
 /// A textual artifact whose whole-content hash has been verified.

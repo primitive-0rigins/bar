@@ -34,6 +34,10 @@ use bar_target::{ConnectorKind, ResolvedTarget, RevisionIdentity, TargetStatus};
 use sqlx::sqlite::{Sqlite, SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
 use sqlx::{FromRow, Transaction};
 
+mod ruling;
+
+pub use ruling::{RulingPersistence, StoredContractRuling};
+
 /// A handle to the BAR relational store.
 #[derive(Clone)]
 pub struct Store {
@@ -2766,6 +2770,196 @@ mod tests {
         .unwrap();
         assert!(reopened
             .load_scope_context_evidence(&first.evidence_id)
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn contract_rulings_reuse_supersede_expire_and_reload() {
+        use bar_contract::ruling::ContractRuling;
+        use bar_contract::{extract_deterministic, ArtifactText};
+
+        let repo = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(repo.path()).unwrap();
+        let text = "The cache MUST retain entries.\nThe cache MUST NOT retain entries.";
+        write_file(&root, "README.md", text.as_bytes());
+        let (store, dir) = temp_store().await;
+        let target_id = store
+            .register_target(&tree_target(&root), T0)
+            .await
+            .unwrap()
+            .target_id;
+        let revision_id = store
+            .record_revision(&target_id, &revision("commit-a", None), T0)
+            .await
+            .unwrap()
+            .revision_id;
+        let inventory = bar_discovery::scan(
+            &root,
+            &bar_discovery::ScanConfig::default(),
+            &PriorInventory::new(),
+        )
+        .unwrap();
+        store
+            .persist_inventory(&target_id, &revision_id, &inventory, T0)
+            .await
+            .unwrap();
+        let artifact = &inventory.artifacts[0];
+        let artifact_text = ArtifactText::new(
+            artifact.artifact_id(&revision_id),
+            &artifact.logical_path,
+            artifact.content_sha256.parse().unwrap(),
+            text,
+        )
+        .unwrap();
+        let claims = extract_deterministic(&artifact_text).unwrap();
+        let mut contracts = store
+            .persist_contracts(&target_id, &revision_id, &claims, T0 + 1)
+            .await
+            .unwrap()
+            .contract_ids;
+        contracts.sort_unstable();
+        let context_source = SourceRef {
+            artifact_id: artifact.artifact_id(&revision_id),
+            start_offset: 0,
+            end_offset: text.len(),
+            exact_text_sha256: artifact.content_sha256.parse().unwrap(),
+        };
+        let context = store
+            .persist_scope_context_evidence(
+                &target_id,
+                &revision_id,
+                &ScopeContext {
+                    environment: Some("production".into()),
+                    ..ScopeContext::default()
+                },
+                &context_source,
+                T0 + 2,
+                T0 + 2,
+            )
+            .await
+            .unwrap();
+        let ruling = ContractRuling {
+            contract_refs: contracts.clone(),
+            chosen_interpretation: "retain entries".into(),
+            rejected_interpretations: vec!["discard entries".into()],
+            rationale: "The production retention requirement controls.".into(),
+            scope: ContractScope {
+                environments: vec!["production".into()],
+                ..ContractScope::default()
+            },
+            effective_from_ms: T0 + 3,
+            expires_at_ms: Some(T0 + 100),
+            operator_id: "operator/alice".into(),
+        };
+
+        assert!(store
+            .persist_contract_ruling(
+                &TargetId::generate(),
+                &context.evidence_id,
+                &ruling,
+                None,
+                T0 + 3,
+            )
+            .await
+            .is_err());
+        let first = store
+            .persist_contract_ruling(&target_id, &context.evidence_id, &ruling, None, T0 + 3)
+            .await
+            .unwrap();
+        assert!(first.inserted);
+
+        let mut attempted_edit = ruling.clone();
+        attempted_edit.rationale = "A changed rationale must not replace history.".into();
+        let reused = store
+            .persist_contract_ruling(
+                &target_id,
+                &context.evidence_id,
+                &attempted_edit,
+                None,
+                T0 + 4,
+            )
+            .await
+            .unwrap();
+        assert_eq!(reused.ruling_id, first.ruling_id);
+        assert!(!reused.inserted);
+
+        let mut replacement = ruling.clone();
+        replacement.chosen_interpretation = "discard entries".into();
+        replacement.rejected_interpretations = vec!["retain entries".into()];
+        replacement.rationale = "Reviewed deployment evidence changes the interpretation.".into();
+        replacement.effective_from_ms = T0 + 5;
+        let second = store
+            .persist_contract_ruling(
+                &target_id,
+                &context.evidence_id,
+                &replacement,
+                Some(&first.ruling_id),
+                T0 + 5,
+            )
+            .await
+            .unwrap();
+        assert!(second.inserted);
+        let replacement_replay = store
+            .persist_contract_ruling(
+                &target_id,
+                &context.evidence_id,
+                &replacement,
+                Some(&first.ruling_id),
+                T0 + 6,
+            )
+            .await
+            .unwrap();
+        assert_eq!(replacement_replay.ruling_id, second.ruling_id);
+        assert!(!replacement_replay.inserted);
+
+        let loaded_first = store.load_contract_ruling(&first.ruling_id).await.unwrap();
+        assert_eq!(loaded_first.superseded_by, Some(second.ruling_id));
+        assert_eq!(loaded_first.ruling, ruling);
+        let loaded_second = store.load_contract_ruling(&second.ruling_id).await.unwrap();
+        assert_eq!(loaded_second.ruling, replacement);
+        assert_eq!(loaded_second.context_evidence_id, context.evidence_id);
+        assert_eq!(loaded_second.superseded_by, None);
+
+        let mut renewal = replacement.clone();
+        renewal.effective_from_ms = T0 + 101;
+        renewal.expires_at_ms = None;
+        let renewed = store
+            .persist_contract_ruling(&target_id, &context.evidence_id, &renewal, None, T0 + 101)
+            .await
+            .unwrap();
+        assert!(renewed.inserted, "an expired ruling is not reused");
+        assert_ne!(renewed.ruling_id, second.ruling_id);
+
+        let url = format!("sqlite://{}", dir.path().join("bar.db").display());
+        let reopened = Store::connect(&url).await.unwrap();
+        reopened.migrate().await.unwrap();
+        assert_eq!(
+            reopened
+                .load_contract_ruling(&second.ruling_id)
+                .await
+                .unwrap(),
+            loaded_second
+        );
+        let chain = reopened.load_audit_chain().await.unwrap();
+        chain.verify().unwrap();
+        assert_eq!(
+            chain
+                .records()
+                .iter()
+                .filter(|record| record.event.category == AuditCategory::Ruling)
+                .count(),
+            4,
+            "reuse, replay, and failed writes emit no ruling events"
+        );
+
+        sqlx::query("UPDATE contract_rulings SET contract_refs_json = '[]' WHERE ruling_id = ?")
+            .bind(second.ruling_id.to_string())
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        assert!(reopened
+            .load_contract_ruling(&second.ruling_id)
             .await
             .is_err());
     }
