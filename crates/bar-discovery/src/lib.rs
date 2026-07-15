@@ -164,7 +164,13 @@ pub struct Inventory {
 /// (empty on the first scan of a revision). Only added, changed, or (in
 /// [`ScanMode::Full`]) all files are read and hashed.
 pub fn scan(root: &Path, config: &ScanConfig, prior: &PriorInventory) -> Result<Inventory> {
-    let entries = walk::walk(root, config)?;
+    let root = std::fs::canonicalize(root).map_err(|e| {
+        bar_core::Error::Target(format!(
+            "cannot resolve target root {}: {e}",
+            root.display()
+        ))
+    })?;
+    let entries = walk::walk(&root, config)?;
     let mut artifacts = Vec::with_capacity(entries.len());
     let mut summary = ScanSummary::default();
     let mut invalidated_paths = std::collections::BTreeSet::new();
@@ -203,8 +209,12 @@ pub fn scan(root: &Path, config: &ScanConfig, prior: &PriorInventory) -> Result<
                 modified_at_ms: entry.modified_at_ms,
             }
         } else {
-            match read_and_hash(&root.join(&entry.logical_path)) {
-                Ok((head, content_sha256)) => {
+            match read_and_hash(
+                &root,
+                &root.join(&entry.logical_path),
+                config.max_file_bytes,
+            ) {
+                Ok((head, content_sha256, size_bytes, modified_at_ms)) => {
                     summary.hashed += 1;
                     let kind = classify::classify(&entry.logical_path, &head);
                     DiscoveredArtifact {
@@ -213,8 +223,8 @@ pub fn scan(root: &Path, config: &ScanConfig, prior: &PriorInventory) -> Result<
                         media_type: classify::media_type(&entry.logical_path).to_string(),
                         artifact_kind: kind,
                         source_of_truth: kind.is_source_of_truth(),
-                        size_bytes: entry.size_bytes,
-                        modified_at_ms: entry.modified_at_ms,
+                        size_bytes,
+                        modified_at_ms,
                     }
                 }
                 Err(_) => {
@@ -264,8 +274,32 @@ fn artifact_unchanged(prior: &PriorArtifact, current: &DiscoveredArtifact) -> bo
 
 /// Reads a file once, returning a prefix of its content (for classification) and
 /// its full SHA-256 as a lowercase hex digest.
-fn read_and_hash(path: &Path) -> std::io::Result<(Vec<u8>, String)> {
-    let mut file = std::fs::File::open(path)?;
+fn read_and_hash(
+    root: &Path,
+    path: &Path,
+    max_file_bytes: u64,
+) -> std::io::Result<(Vec<u8>, String, u64, Option<i64>)> {
+    let real = std::fs::canonicalize(path)?;
+    if !real.starts_with(root) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "file escapes target root",
+        ));
+    }
+    let mut file = std::fs::File::open(real)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || metadata.len() > max_file_bytes {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "file changed type or exceeded scan limit",
+        ));
+    }
+    let size_bytes = metadata.len();
+    let modified_at_ms = metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .and_then(|duration| i64::try_from(duration.as_millis()).ok());
     let mut hasher = Sha256::new();
     let mut head = Vec::new();
     let mut buf = [0u8; 8192];
@@ -281,7 +315,7 @@ fn read_and_hash(path: &Path) -> std::io::Result<(Vec<u8>, String)> {
         }
     }
     let digest = Sha256Digest::from_bytes(hasher.finalize().into());
-    Ok((head, digest.to_string()))
+    Ok((head, digest.to_string(), size_bytes, modified_at_ms))
 }
 
 /// Builds a [`PriorInventory`] from a resulting [`Inventory`] — the shape the
@@ -446,6 +480,43 @@ mod tests {
         assert_eq!(second.summary.changed, 1);
         assert_eq!(second.summary.unchanged, 0);
         assert_eq!(second.invalidated_paths, ["big.bin"]);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn hash_open_rechecks_boundary_and_size_limit() {
+        use std::os::unix::fs::symlink;
+
+        let target = tempfile::tempdir().unwrap();
+        let root = canon(&target);
+        let outside = tempfile::tempdir().unwrap();
+        let secret = outside.path().join("secret.txt");
+        fs::write(&secret, b"secret").unwrap();
+        let escape = root.join("escape.txt");
+        symlink(&secret, &escape).unwrap();
+        assert!(read_and_hash(&root, &escape, 1024).is_err());
+
+        let growing = root.join("growing.txt");
+        fs::write(&growing, b"12345").unwrap();
+        assert!(read_and_hash(&root, &growing, 4).is_err());
+        let (_, _, size, _) = read_and_hash(&root, &growing, 5).unwrap();
+        assert_eq!(size, 5);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn non_utf8_names_are_skipped_instead_of_lossily_colliding() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = canon(&dir);
+        write(&root, "safe.rs", b"fn safe() {}");
+        let invalid = std::ffi::OsString::from_vec(b"bad\xff.rs".to_vec());
+        fs::write(root.join(invalid), b"fn hidden() {}").unwrap();
+
+        let inventory = scan(&root, &ScanConfig::default(), &PriorInventory::new()).unwrap();
+        assert_eq!(inventory.summary.total, 1);
+        assert_eq!(inventory.artifacts[0].logical_path, "safe.rs");
     }
 
     #[test]

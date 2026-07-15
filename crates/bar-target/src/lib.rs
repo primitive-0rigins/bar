@@ -237,13 +237,25 @@ pub fn resolve_target(name: &str, root: &Path) -> Result<ResolvedTarget> {
 /// outside it is rejected. A candidate that does not exist is an error, never a
 /// panic.
 pub fn resolve_within(root: &Path, candidate: &Path) -> Result<PathBuf> {
+    let canonical_root = std::fs::canonicalize(root).map_err(|e| {
+        Error::Target(format!(
+            "target root {} cannot be resolved: {e}",
+            root.display()
+        ))
+    })?;
+    if canonical_root != root || !canonical_root.is_dir() {
+        return Err(Error::Target(format!(
+            "target root {} is not a canonical directory",
+            root.display()
+        )));
+    }
     let real = std::fs::canonicalize(candidate).map_err(|e| {
         Error::Target(format!(
             "path {} cannot be resolved: {e}",
             candidate.display()
         ))
     })?;
-    if real.starts_with(root) {
+    if real.starts_with(&canonical_root) {
         Ok(real)
     } else {
         Err(Error::Target(format!(
@@ -308,6 +320,18 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let root_path = std::fs::canonicalize(root.path()).unwrap();
         assert!(resolve_within(&root_path, &root_path.join("nope")).is_err());
+    }
+
+    #[test]
+    fn resolve_within_rejects_a_noncanonical_declared_root() {
+        let parent = tempfile::tempdir().unwrap();
+        let root = parent.path().join("target");
+        std::fs::create_dir(&root).unwrap();
+        let inside = root.join("file.txt");
+        std::fs::write(&inside, b"x").unwrap();
+        let noncanonical = root.join("..").join("target");
+
+        assert!(resolve_within(&noncanonical, &inside).is_err());
     }
 
     // --- Vocabulary (mandated unknown-value tests, spec §22) ---

@@ -23,8 +23,8 @@ impl ArtifactDependency {
         let dependent_path = dependent_path.into();
         let dependency_path = dependency_path.into();
         let relation_kind = relation_kind.into();
-        validate_path("dependent", &dependent_path)?;
-        validate_path("dependency", &dependency_path)?;
+        validate_logical_path(&dependent_path)?;
+        validate_logical_path(&dependency_path)?;
         if relation_kind.is_empty()
             || relation_kind.len() > 64
             || !relation_kind
@@ -108,18 +108,18 @@ impl DependencyGraph {
     }
 }
 
-fn validate_path(role: &str, path: &str) -> Result<()> {
+/// Validates BAR's portable, target-relative logical path representation.
+pub fn validate_logical_path(path: &str) -> Result<()> {
     let invalid = path.is_empty()
         || path.len() > 4096
         || path.contains('\0')
+        || path.contains('\\')
         || path.starts_with('/')
         || path
             .split('/')
             .any(|part| part.is_empty() || part == ".." || part == ".");
     if invalid {
-        return Err(Error::Corrupt(format!(
-            "invalid {role} artifact path `{path}`"
-        )));
+        return Err(Error::Corrupt(format!("invalid artifact path `{path}`")));
     }
     Ok(())
 }
@@ -180,6 +180,7 @@ mod tests {
     fn rejects_unsafe_paths_and_relation_tokens() {
         assert!(ArtifactDependency::new("../escape", "a.rs", "imports").is_err());
         assert!(ArtifactDependency::new("a.rs", "/rooted", "imports").is_err());
+        assert!(ArtifactDependency::new(r"src\a.rs", "b.rs", "imports").is_err());
         assert!(ArtifactDependency::new("a.rs", "b.rs", "not valid").is_err());
     }
 }

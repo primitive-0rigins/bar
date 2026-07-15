@@ -28,7 +28,7 @@ use bar_core::{
     ContractId, ContractLevel, Error, EvidenceId, NormativeKind, Result, RevisionId, Sha256Digest,
     TargetId,
 };
-use bar_discovery::dependency::ArtifactDependency;
+use bar_discovery::dependency::{validate_logical_path, ArtifactDependency};
 use bar_discovery::{ArtifactKind, Inventory, PriorArtifact, PriorInventory};
 use bar_target::{ConnectorKind, ResolvedTarget, RevisionIdentity, TargetStatus};
 use sqlx::sqlite::{Sqlite, SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
@@ -65,18 +65,20 @@ impl Store {
 
     /// Persists a sealed audit record.
     pub async fn insert_audit_record(&self, record: &AuditRecord) -> Result<()> {
+        let seq = required_sqlite_u64(record.seq, "audit sequence")?;
+        let occurred_at = required_sqlite_u64(record.event.occurred_at_ms, "audit timestamp")?;
         sqlx::query(
             "INSERT INTO audit_log \
              (seq, prev_hash, category, actor, summary, subject, occurred_at_ms, hash) \
              VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         )
-        .bind(record.seq as i64)
+        .bind(seq)
         .bind(record.prev_hash.to_string())
         .bind(record.event.category.as_str())
         .bind(&record.event.actor)
         .bind(&record.event.summary)
         .bind(record.event.subject.as_deref())
-        .bind(record.event.occurred_at_ms as i64)
+        .bind(occurred_at)
         .bind(record.hash.to_string())
         .execute(&self.pool)
         .await
@@ -113,7 +115,7 @@ impl Store {
         now_ms: u64,
     ) -> Result<Registration> {
         let root = resolved.root_locator.to_string_lossy();
-        let now = now_ms as i64;
+        let now = required_sqlite_u64(now_ms, "target timestamp")?;
         let mut tx = self.pool.begin().await.map_err(storage("begin"))?;
 
         let existing: Option<TargetRow> =
@@ -202,7 +204,7 @@ impl Store {
         now_ms: u64,
     ) -> Result<RevisionRecord> {
         let revision_id = revision.revision_id(target_id);
-        let now = now_ms as i64;
+        let now = required_sqlite_u64(now_ms, "revision timestamp")?;
         let mut tx = self.pool.begin().await.map_err(storage("begin"))?;
 
         let result = sqlx::query(
@@ -266,10 +268,41 @@ impl Store {
         inventory: &Inventory,
         now_ms: u64,
     ) -> Result<()> {
-        let now = now_ms as i64;
+        let now = required_sqlite_u64(now_ms, "inventory timestamp")?;
+        for artifact in &inventory.artifacts {
+            validate_logical_path(&artifact.logical_path)?;
+            if artifact.modified_at_ms.is_some_and(|value| value < 0) {
+                return Err(Error::Corrupt(
+                    "artifact modification timestamp is negative".into(),
+                ));
+            }
+            required_sqlite_u64(artifact.size_bytes, "artifact size")?;
+            if artifact.content_sha256 != bar_discovery::UNHASHED_OVERSIZED {
+                Sha256Digest::from_str(&artifact.content_sha256)?;
+            }
+        }
         let mut tx = self.pool.begin().await.map_err(storage("begin"))?;
 
-        append_audit(&mut tx, scan_event(now_ms, "target.scan.started", None)).await?;
+        let revision_exists: i64 = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM target_revisions \
+             WHERE revision_id = ? AND target_id = ?)",
+        )
+        .bind(revision_id.to_string())
+        .bind(target_id.to_string())
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(storage("check inventory revision"))?;
+        if revision_exists == 0 {
+            return Err(Error::Corrupt(format!(
+                "inventory references revision {revision_id} outside target {target_id}"
+            )));
+        }
+
+        append_audit(
+            &mut tx,
+            scan_event(target_id, now_ms, "target.scan.started", None),
+        )
+        .await?;
 
         for artifact in &inventory.artifacts {
             let artifact_id = artifact.artifact_id(revision_id);
@@ -287,7 +320,7 @@ impl Store {
             .bind(&artifact.media_type)
             .bind(artifact.artifact_kind.as_str())
             .bind(i64::from(artifact.source_of_truth))
-            .bind(artifact.size_bytes as i64)
+            .bind(required_sqlite_u64(artifact.size_bytes, "artifact size")?)
             .bind(artifact.modified_at_ms)
             .bind(now)
             .execute(&mut *tx)
@@ -302,7 +335,7 @@ impl Store {
         );
         append_audit(
             &mut tx,
-            scan_event(now_ms, "target.scan.completed", Some(summary)),
+            scan_event(target_id, now_ms, "target.scan.completed", Some(summary)),
         )
         .await?;
 
@@ -486,7 +519,7 @@ impl Store {
                     .bind(claim.normative_kind.as_str())
                     .bind(&claim.statement)
                     .bind(&fingerprint)
-                    .bind(now_ms as i64)
+                    .bind(required_sqlite_u64(now_ms, "contract timestamp")?)
                     .execute(&mut *tx)
                     .await
                     .map_err(storage("insert contract"))?;
@@ -498,8 +531,14 @@ impl Store {
                     )
                     .bind(id.to_string())
                     .bind(claim.source.artifact_id.to_string())
-                    .bind(claim.source.start_offset as i64)
-                    .bind(claim.source.end_offset as i64)
+                    .bind(required_sqlite_usize(
+                        claim.source.start_offset,
+                        "contract source start",
+                    )?)
+                    .bind(required_sqlite_usize(
+                        claim.source.end_offset,
+                        "contract source end",
+                    )?)
                     .bind(claim.source.exact_text_sha256.to_string())
                     .execute(&mut *tx)
                     .await
@@ -742,8 +781,10 @@ impl Store {
     }
 
     /// Persists an immutable scope-context observation bound to an exact
-    /// artifact span in a target revision. Source revision is derived from the
-    /// stored revision identity, never accepted from caller-supplied context.
+    /// inventoried artifact in a target revision. Whole-artifact binding keeps
+    /// the cited digest independently verifiable until excerpt evidence storage
+    /// lands. Source revision is derived from stored revision identity, never
+    /// accepted from caller-supplied context.
     pub async fn persist_scope_context_evidence(
         &self,
         target_id: &TargetId,
@@ -780,8 +821,8 @@ impl Store {
                 ))
             })?;
 
-        let artifact_size: Option<i64> = sqlx::query_scalar(
-            "SELECT size_bytes FROM artifacts \
+        let artifact: Option<(i64, String)> = sqlx::query_as(
+            "SELECT size_bytes, content_sha256 FROM artifacts \
              WHERE artifact_id = ? AND target_id = ? AND revision_id = ?",
         )
         .bind(source.artifact_id.to_string())
@@ -790,9 +831,18 @@ impl Store {
         .fetch_optional(&mut *tx)
         .await
         .map_err(storage("load scope context artifact"))?;
-        if artifact_size.is_none_or(|size| end_offset > size) {
-            return Err(Error::Corrupt(format!(
+        let (artifact_size, content_sha256) = artifact.ok_or_else(|| {
+            Error::Corrupt(format!(
                 "scope context source {} is outside revision {revision_id}",
+                source.artifact_id
+            ))
+        })?;
+        if start_offset != 0
+            || end_offset != artifact_size
+            || source.exact_text_sha256.to_string() != content_sha256
+        {
+            return Err(Error::Corrupt(format!(
+                "scope context source {} does not match its complete inventoried artifact",
                 source.artifact_id
             )));
         }
@@ -872,7 +922,7 @@ impl Store {
         let row: Option<ScopeContextEvidenceRow> = sqlx::query_as(
             "SELECT e.target_id, e.revision_id, e.context_json, e.artifact_id, e.start_offset, \
                     e.end_offset, e.exact_text_sha256, e.observed_at_ms, r.source_commit, \
-                    a.size_bytes \
+                    a.size_bytes, a.content_sha256 \
              FROM scope_context_evidence e \
              JOIN target_revisions r ON r.revision_id = e.revision_id AND r.target_id = e.target_id \
              JOIN artifacts a ON a.artifact_id = e.artifact_id \
@@ -953,8 +1003,14 @@ impl Store {
             .bind(&candidate.heading)
             .bind(i64::from(candidate.heading_level))
             .bind(candidate.source.artifact_id.to_string())
-            .bind(candidate.source.start_offset as i64)
-            .bind(candidate.source.end_offset as i64)
+            .bind(required_sqlite_usize(
+                candidate.source.start_offset,
+                "hierarchy source start",
+            )?)
+            .bind(required_sqlite_usize(
+                candidate.source.end_offset,
+                "hierarchy source end",
+            )?)
             .bind(candidate.source.exact_text_sha256.to_string())
             .execute(&mut *tx)
             .await
@@ -979,8 +1035,14 @@ impl Store {
             .bind(&candidate.definition)
             .bind(aliases)
             .bind(candidate.source.artifact_id.to_string())
-            .bind(candidate.source.start_offset as i64)
-            .bind(candidate.source.end_offset as i64)
+            .bind(required_sqlite_usize(
+                candidate.source.start_offset,
+                "glossary source start",
+            )?)
+            .bind(required_sqlite_usize(
+                candidate.source.end_offset,
+                "glossary source end",
+            )?)
             .bind(candidate.source.exact_text_sha256.to_string())
             .execute(&mut *tx)
             .await
@@ -1122,12 +1184,12 @@ fn missing_dependency_artifact(revision_id: &RevisionId, path: &str) -> Error {
 }
 
 /// Builds a scan-level audit event.
-fn scan_event(now_ms: u64, kind: &str, detail: Option<String>) -> AuditEvent {
+fn scan_event(target_id: &TargetId, now_ms: u64, kind: &str, detail: Option<String>) -> AuditEvent {
     AuditEvent {
         category: AuditCategory::LifecycleTransition,
         actor: SYSTEM_ACTOR.to_string(),
         summary: detail.unwrap_or_else(|| kind.to_string()),
-        subject: Some(kind.to_string()),
+        subject: Some(target_id.to_string()),
         occurred_at_ms: now_ms,
     }
 }
@@ -1142,7 +1204,13 @@ async fn append_audit(tx: &mut Transaction<'_, Sqlite>, event: AuditEvent) -> Re
             .await
             .map_err(storage("audit tip"))?;
     let (seq, prev_hash) = match tip {
-        Some((seq, hash)) => (seq as u64 + 1, Sha256Digest::from_str(&hash)?),
+        Some((seq, hash)) => (
+            u64::try_from(seq)
+                .map_err(|_| Error::Corrupt("negative audit sequence".into()))?
+                .checked_add(1)
+                .ok_or_else(|| Error::Corrupt("audit sequence overflow".into()))?,
+            Sha256Digest::from_str(&hash)?,
+        ),
         None => (0, GENESIS),
     };
     let hash = record_hash(seq, &prev_hash, &event);
@@ -1152,13 +1220,16 @@ async fn append_audit(tx: &mut Transaction<'_, Sqlite>, event: AuditEvent) -> Re
          (seq, prev_hash, category, actor, summary, subject, occurred_at_ms, hash) \
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
     )
-    .bind(seq as i64)
+    .bind(required_sqlite_u64(seq, "audit sequence")?)
     .bind(prev_hash.to_string())
     .bind(event.category.as_str())
     .bind(&event.actor)
     .bind(&event.summary)
     .bind(event.subject.as_deref())
-    .bind(event.occurred_at_ms as i64)
+    .bind(required_sqlite_u64(
+        event.occurred_at_ms,
+        "audit timestamp",
+    )?)
     .bind(hash.to_string())
     .execute(&mut **tx)
     .await
@@ -1176,6 +1247,14 @@ fn sqlite_timestamp(value: Option<u64>) -> Result<Option<i64>> {
                 .map_err(|_| Error::Corrupt("timestamp exceeds SQLite integer range".into()))
         })
         .transpose()
+}
+
+fn required_sqlite_u64(value: u64, field: &str) -> Result<i64> {
+    i64::try_from(value).map_err(|_| Error::Corrupt(format!("{field} exceeds SQLite range")))
+}
+
+fn required_sqlite_usize(value: usize, field: &str) -> Result<i64> {
+    i64::try_from(value).map_err(|_| Error::Corrupt(format!("{field} exceeds SQLite range")))
 }
 
 fn stored_timestamp(value: Option<i64>) -> Result<Option<u64>> {
@@ -1374,6 +1453,7 @@ struct ScopeContextEvidenceRow {
     observed_at_ms: i64,
     source_commit: Option<String>,
     size_bytes: i64,
+    content_sha256: String,
 }
 
 impl ScopeContextEvidenceRow {
@@ -1392,7 +1472,11 @@ impl ScopeContextEvidenceRow {
             .map_err(|_| Error::Corrupt("negative scope context source offset".into()))?;
         let size_bytes = usize::try_from(self.size_bytes)
             .map_err(|_| Error::Corrupt("negative scope context artifact size".into()))?;
-        if start_offset >= end_offset || end_offset > size_bytes {
+        if start_offset != 0
+            || start_offset >= end_offset
+            || end_offset != size_bytes
+            || self.exact_text_sha256 != self.content_sha256
+        {
             return Err(Error::Corrupt(
                 "invalid persisted scope context source span".into(),
             ));
@@ -1581,19 +1665,39 @@ fn stored_source(
 
 impl ArtifactRow {
     fn into_prior(self) -> Result<PriorArtifact> {
+        validate_logical_path(&self.logical_path)?;
+        if self.content_sha256 != bar_discovery::UNHASHED_OVERSIZED {
+            Sha256Digest::from_str(&self.content_sha256)?;
+        }
+        let source_of_truth = match self.source_of_truth {
+            0 => false,
+            1 => true,
+            other => {
+                return Err(Error::Corrupt(format!(
+                    "unknown artifact source-of-truth state `{other}`"
+                )))
+            }
+        };
+        let size_bytes = u64::try_from(self.size_bytes)
+            .map_err(|_| Error::Corrupt("negative artifact size".into()))?;
+        if self.modified_at_ms.is_some_and(|value| value < 0) {
+            return Err(Error::Corrupt(
+                "negative artifact modification timestamp".into(),
+            ));
+        }
         Ok(PriorArtifact {
             content_sha256: self.content_sha256,
             media_type: self.media_type,
             artifact_kind: ArtifactKind::from_token(&self.artifact_kind)?,
-            source_of_truth: self.source_of_truth != 0,
-            size_bytes: self.size_bytes as u64,
+            source_of_truth,
+            size_bytes,
             modified_at_ms: self.modified_at_ms,
         })
     }
 }
 
 /// One `audit_log` row. Integer columns are `i64` at the DB boundary (SQLite and
-/// PostgreSQL do not encode `u64`) and cast back to `u64` on the way out.
+/// PostgreSQL do not encode `u64`) and are checked on the way out.
 #[derive(FromRow)]
 struct AuditRow {
     seq: i64,
@@ -1609,14 +1713,16 @@ struct AuditRow {
 impl AuditRow {
     fn into_record(self) -> Result<AuditRecord> {
         Ok(AuditRecord {
-            seq: self.seq as u64,
+            seq: u64::try_from(self.seq)
+                .map_err(|_| Error::Corrupt("negative audit sequence".into()))?,
             prev_hash: Sha256Digest::from_str(&self.prev_hash)?,
             event: AuditEvent {
                 category: AuditCategory::from_token(&self.category)?,
                 actor: self.actor,
                 summary: self.summary,
                 subject: self.subject,
-                occurred_at_ms: self.occurred_at_ms as u64,
+                occurred_at_ms: u64::try_from(self.occurred_at_ms)
+                    .map_err(|_| Error::Corrupt("negative audit timestamp".into()))?,
             },
             hash: Sha256Digest::from_str(&self.hash)?,
         })
@@ -1712,6 +1818,36 @@ mod tests {
             connector_kind: ConnectorKind::Filesystem,
             revision: RevisionIdentity::unbound(),
         }
+    }
+
+    #[tokio::test]
+    async fn integer_boundaries_and_negative_audit_state_fail_closed() {
+        let (store, _dir) = temp_store().await;
+        assert!(store
+            .register_target(&sample_target("overflow", "/srv/overflow"), u64::MAX)
+            .await
+            .is_err());
+
+        let mut chain = AuditChain::new();
+        chain.append(sample_event(0));
+        store
+            .insert_audit_record(&chain.records()[0])
+            .await
+            .unwrap();
+        sqlx::query("UPDATE audit_log SET seq = -1 WHERE seq = 0")
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        assert!(store.load_audit_chain().await.is_err());
+        assert!(store
+            .register_target(&sample_target("blocked", "/srv/blocked"), T0)
+            .await
+            .is_err());
+        let targets: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM targets")
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+        assert_eq!(targets, 0, "corrupt audit tip rolls back the mutation");
     }
 
     #[tokio::test]
@@ -1946,6 +2082,67 @@ mod tests {
         let chain = store.load_audit_chain().await.unwrap();
         chain.verify().unwrap();
         assert_eq!(chain.len(), 6);
+        let target_subject = target_id.to_string();
+        assert!(chain.records()[2..]
+            .iter()
+            .all(|record| record.event.subject.as_deref() == Some(target_subject.as_str())));
+
+        sqlx::query("UPDATE artifacts SET size_bytes = -1 WHERE revision_id = ?")
+            .bind(rev_id.to_string())
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        assert!(store.load_inventory(&rev_id).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn inventory_rejects_cross_target_paths_and_integer_overflow() {
+        let repo = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(repo.path()).unwrap();
+        write_file(&root, "src/main.rs", b"fn main() {}");
+        let (store, _dir) = temp_store().await;
+        let target_id = store
+            .register_target(&tree_target(&root), T0)
+            .await
+            .unwrap()
+            .target_id;
+        let revision_id = store
+            .record_revision(&target_id, &revision("c", None), T0)
+            .await
+            .unwrap()
+            .revision_id;
+        let inventory = bar_discovery::scan(
+            &root,
+            &bar_discovery::ScanConfig::default(),
+            &PriorInventory::new(),
+        )
+        .unwrap();
+
+        assert!(store
+            .persist_inventory(&TargetId::generate(), &revision_id, &inventory, T0)
+            .await
+            .is_err());
+        let mut unsafe_path = inventory.clone();
+        unsafe_path.artifacts[0].logical_path = "../escape.rs".into();
+        assert!(store
+            .persist_inventory(&target_id, &revision_id, &unsafe_path, T0)
+            .await
+            .is_err());
+        let mut overflow = inventory;
+        overflow.artifacts[0].size_bytes = u64::MAX;
+        assert!(store
+            .persist_inventory(&target_id, &revision_id, &overflow, T0)
+            .await
+            .is_err());
+
+        let artifacts: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM artifacts")
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+        assert_eq!(artifacts, 0);
+        let chain = store.load_audit_chain().await.unwrap();
+        chain.verify().unwrap();
+        assert_eq!(chain.len(), 2, "rejected inventories emit no scan events");
     }
 
     #[tokio::test]
@@ -2451,6 +2648,20 @@ mod tests {
             ..ScopeContext::default()
         };
 
+        let mut forged_source = source.clone();
+        forged_source.exact_text_sha256 = Sha256Digest::from_bytes([9; 32]);
+        assert!(store
+            .persist_scope_context_evidence(
+                &target_id,
+                &revision_id,
+                &supplied,
+                &forged_source,
+                T0 + 1,
+                T0 + 2,
+            )
+            .await
+            .is_err());
+
         assert!(store
             .persist_scope_context_evidence(
                 &TargetId::generate(),
@@ -2523,6 +2734,27 @@ mod tests {
         let chain = reopened.load_audit_chain().await.unwrap();
         chain.verify().unwrap();
         assert_eq!(chain.len(), 5, "failure and replay emit no evidence events");
+
+        sqlx::query(
+            "UPDATE scope_context_evidence SET exact_text_sha256 = ? WHERE evidence_id = ?",
+        )
+        .bind("00".repeat(32))
+        .bind(first.evidence_id.to_string())
+        .execute(&store.pool)
+        .await
+        .unwrap();
+        assert!(reopened
+            .load_scope_context_evidence(&first.evidence_id)
+            .await
+            .is_err());
+        sqlx::query(
+            "UPDATE scope_context_evidence SET exact_text_sha256 = ? WHERE evidence_id = ?",
+        )
+        .bind(source.exact_text_sha256.to_string())
+        .bind(first.evidence_id.to_string())
+        .execute(&store.pool)
+        .await
+        .unwrap();
 
         sqlx::query(
             "UPDATE scope_context_evidence SET context_json = '{\"unknown\":true}' \

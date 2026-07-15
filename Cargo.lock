@@ -78,6 +78,7 @@ dependencies = [
  "bar-config",
  "bar-core",
  "serde_json",
+ "tempfile",
  "tracing",
  "tracing-subscriber",
 ]

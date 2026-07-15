@@ -20,10 +20,11 @@ const RSS_CEILING_BYTES: u64 = 300 * 1024 * 1024;
 
 #[test]
 fn daemon_boots_model_free_within_resource_budget() {
+    let config = tempfile::NamedTempFile::new().expect("create default test config");
     let output = Command::new(env!("CARGO_BIN_EXE_bar-daemon"))
-        // A path that cannot exist forces the built-in (model-free) defaults,
-        // regardless of any /etc/bar/bar.toml on the host.
-        .env("BAR_CONFIG", "/nonexistent/bar-resource-budget-test.toml")
+        // An empty, existing file resolves through serde defaults and keeps the
+        // test independent of any /etc/bar/bar.toml on the host.
+        .env("BAR_CONFIG", config.path())
         .env("BAR_LOG_FORMAT", "json")
         .env("BAR_LOG", "info")
         .output()

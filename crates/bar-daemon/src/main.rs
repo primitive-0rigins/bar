@@ -7,7 +7,7 @@
 //! resident** (spec §3.1). The long-running service loop is added with the API
 //! phase; today the daemon initializes, reports readiness, and exits cleanly.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use bar_config::Config;
@@ -92,12 +92,18 @@ fn run() -> Result<()> {
 /// Loads configuration from `$BAR_CONFIG` (or the default path), falling back to
 /// built-in defaults when no file is present so the daemon runs out of the box.
 fn load_config() -> Result<(Config, String)> {
-    let path = std::env::var_os("BAR_CONFIG")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/etc/bar/bar.toml"));
+    let explicit = std::env::var_os("BAR_CONFIG").map(PathBuf::from);
+    load_config_from(explicit.as_deref(), Path::new("/etc/bar/bar.toml"))
+}
 
-    if path.exists() {
-        Ok((Config::load(&path)?, path.display().to_string()))
+fn load_config_from(explicit: Option<&Path>, default_path: &Path) -> Result<(Config, String)> {
+    if let Some(path) = explicit {
+        Ok((Config::load(path)?, path.display().to_string()))
+    } else if default_path.exists() {
+        Ok((
+            Config::load(default_path)?,
+            default_path.display().to_string(),
+        ))
     } else {
         Ok((Config::default(), "built-in defaults".to_string()))
     }
@@ -115,5 +121,21 @@ fn init_logging() {
         builder.json().init();
     } else {
         builder.init();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_explicit_config_fails_but_missing_default_uses_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing.toml");
+
+        assert!(load_config_from(Some(&missing), &missing).is_err());
+        let (config, source) = load_config_from(None, &missing).unwrap();
+        config.validate().unwrap();
+        assert_eq!(source, "built-in defaults");
     }
 }
