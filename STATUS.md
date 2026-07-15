@@ -80,7 +80,7 @@ versioned operator rulings when overlap remains ambiguous.
   versions resolve as ambiguous rather than selecting a contract.
 
 All 113 repository tests pass; clippy `-D warnings` and fmt are clean.
-Implementation revisions: `5a9b3ef`, `f9e71af`, `414be5c`, `15adcfd`, `ed0f016`, `2054c8d`, `a93a672`, `5483b93`, `3e63c89`, `ee9b01d`, `1862d2e`, `1c21194`, `d3d4c2a`, `3ec5aa9`, `37b3642`, `3696360`, `d0d8480`.
+Implementation revisions: `5a9b3ef`, `f9e71af`, `414be5c`, `15adcfd`, `ed0f016`, `2054c8d`, `a93a672`, `5483b93`, `3e63c89`, `ee9b01d`, `1862d2e`, `1c21194`, `d3d4c2a`, `3ec5aa9`, `37b3642`, `3696360`, `d0d8480`, `87adee3`.
 
 ### Remaining before Phase 4 completion
 
@@ -114,8 +114,10 @@ Implementation revisions: `5a9b3ef`, `f9e71af`, `414be5c`, `15adcfd`, `ed0f016`,
   than creating lossy logical-path collisions.
 - Logical artifact paths use one portable validator and reject absolute paths,
   dot segments, NULs, empty segments, and backslashes. Inventory persistence
-  verifies target/revision ownership before auditing or writing, and scan audit
-  subjects now identify the target instead of a generic event token.
+  verifies target/revision ownership before auditing or writing and revalidates
+  conflict-skipped artifact rows inside the transaction. Altered replay rows
+  now fail without adding partial scan audit events; scan audit subjects identify
+  the target instead of a generic event token.
 - Store integer boundaries use checked conversions. Oversized timestamps,
   sizes, and offsets plus negative persisted values fail closed; a corrupt
   audit sequence blocks and rolls back later mutations instead of overflowing.
