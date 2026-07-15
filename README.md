@@ -1,10 +1,11 @@
 # BAR — Behavioral Assurance Runtime
 
-A lightweight, model-optional assurance daemon written in Rust. You point it at a
-software runtime; it learns the runtime's *intended* behavior from the runtime
-itself, compares that intent against implementation and live execution, prepares
-repair-ready findings, waits for **human approval**, hands approved work to a
-connected coding agent, and then independently verifies the result.
+A lightweight, model-optional assurance daemon written in Rust. You point it at
+one or more software runtimes; it learns each runtime's *intended* behavior from
+the runtime itself, compares that intent against implementation and live
+execution, prepares repair-ready findings, waits for **human approval**, hands
+approved work to a connected coding agent, and then independently verifies the
+result.
 
 > **Status:** Phase 4 — contract scope, temporal resolution, and adjudication,
 > in progress. The pure applicability resolver implements closed fail-safe
@@ -40,6 +41,10 @@ target pointer → artifact discovery → contract extraction → hierarchy & ad
 - **Target-first resources.** The monitored workload owns the machine. BAR runs
   without a GPU, keeps no model resident by default, stays near-idle when nothing
   changes, and suspends optional semantic work under target pressure.
+- **Concurrent multi-runtime monitoring (planned).** One daemon will watch
+  multiple registered targets concurrently with isolated state, per-target job
+  serialization, and bounded target-fair shared workers. Fleet-level pattern
+  suggestions remain a later, separate capability.
 - **Model-optional.** BAR remains useful with all models disabled.
 - **Human-gated repair.** No repair job is visible to the coding agent before
   approval; approval binds to exact job content, target, scope, base revision,

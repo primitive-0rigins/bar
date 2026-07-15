@@ -6,7 +6,7 @@ Version 2.0 • July 2026 • Coding-agent execution contract
 
 > **Mission**
 >
-> Build a lightweight, self-discovering assurance daemon that points at a software runtime, learns intended behavior from the target itself, compares that intent with implementation and execution, prepares repair-ready findings, waits for human approval, hands approved work to a connected coding agent, and independently verifies the result.
+> Build a lightweight, self-discovering assurance daemon that points at one or more software runtimes, learns intended behavior from each target itself, compares that intent with implementation and execution, prepares repair-ready findings, waits for human approval, hands approved work to a connected coding agent, and independently verifies the result.
 
 > **Non-negotiable resource rule**
 >
@@ -86,6 +86,7 @@ target pointer
 | Typed evidence            | Documentation, code, tests, simulation, telemetry, operator reports, and BAR inference never collapse.             |
 | Human-directed repair     | A coding task cannot start until exact job hash and base revision are approved.                                    |
 | Incremental operation     | Only changed artifacts and dependent conclusions are recomputed.                                                   |
+| Multi-runtime isolation   | One daemon may monitor multiple targets concurrently; state, evidence, policy, and jobs remain target-bound.       |
 | Resource subordination    | Target workload always outranks BAR semantic work.                                                                 |
 | Replayability             | Findings and decisions reconstruct from retained evidence and versioned analysis.                                  |
 | Evidence freshness        | Proof can become stale without becoming contradicted.                                                              |
@@ -120,6 +121,8 @@ target pointer
 13\. Unknown contract scope or temporal applicability blocks definitive contradiction labels.
 
 14\. Operator corrections and rulings are versioned, reversible, and never erase history.
+
+15\. Concurrent target monitoring uses bounded target-fair workers; work is serialized where required per target, and evidence or authority never crosses target boundaries.
 
 # 4. Resource and Performance Contract
 
@@ -837,7 +840,7 @@ fn evaluate(&self, ctx: VerificationContext) -\> Result\<VerificationResult\>;
 | 6         | Traceability and proof obligations              | Map contracts to code/tests/config; define proof requirements and freshness.                                           | Unmapped and unproven are distinct; evidence levels enforced.              |
 | 7         | Static finding engine                           | Missing implementation, contradiction, dead path, bypass, state, architecture erosion, docs conflict.                  | Findings replay; duplicates aggregate; false-positive correction retained. |
 | 8         | Dashboard v1                                    | Target, inventory, contracts, findings, evidence, adjudication, audit.                                                 | Operator can understand and correct findings without raw DB access.        |
-| 9         | Runtime identity and evidence adapters          | Build/deploy identity, OTel/log/journal/test adapters, topology snapshot, backpressure.                                | Unbound telemetry labeled; dropped ranges explicit.                        |
+| 9         | Runtime identity and evidence adapters          | Build/deploy identity, concurrent per-target watchers, OTel/log/journal/test adapters, topology snapshot, backpressure. | Multiple targets remain isolated; unbound telemetry and dropped ranges are explicit. |
 | 10        | Coverage and conformance shadow                 | Coverage matrix, proof freshness, invariant evaluator, drift detection, finding dependencies.                          | No live action; compare recommendations with operator review.              |
 | 11        | Operational semantics analyzers                 | Queues, retries, timeouts, cancellation, locks, leases, leader, clocks, modes, recovery, settlement.                   | Dedicated distributed-system fixtures pass.                                |
 | 12        | Investigation engine                            | Causal hypotheses, evidence gaps, discriminating experiment proposals, assurance debt.                                 | No active probes; repair readiness deterministic.                          |
@@ -850,7 +853,7 @@ fn evaluate(&self, ctx: VerificationContext) -\> Result\<VerificationResult\>;
 | 19        | Safe active verification                        | Nonproduction probes and failure injection with policy, cleanup, rollback.                                             | Disabled default; stop/side-effect bounds enforced.                        |
 | 20        | Release and operational assurance               | Release reports, runbook validation, rollback proof, canary evidence stages.                                           | Release report reconstructable from evidence.                              |
 | 21        | ML-runtime assurance                            | Statistical contracts, eval provenance, model/prompt/decoding/dataset drift.                                           | Deterministic and statistical proof remain separate.                       |
-| 22        | Multi-target/fleet                              | Tenant isolation, cross-target pattern suggestions, shared adapter registry.                                           | No evidence/contract leakage; per-target policy authoritative.             |
+| 22        | Fleet analytics                                 | Cross-target pattern suggestions, fleet views, and shared adapter registry beyond baseline concurrent monitoring.       | No evidence/contract leakage; per-target policy remains authoritative.     |
 | 23        | Hardening and production readiness              | Threat model closure, load tests, fuzzing, SBOM, signed builds, recovery exercises.                                    | Resource, security, migration, and disaster tests pass.                    |
 
 # 22. Detailed Phase Rules
@@ -2338,6 +2341,7 @@ irreversible
 | Clock rollback         | Never extend expired approval; record health event; monotonic jobs remain authoritative.                                                         |
 | Missed scheduled work  | Run once after startup if still relevant; never duplicate.                                                                                       |
 | Overlap                | Per-target scan and compaction jobs use leases and cannot overlap.                                                                               |
+| Cross-target work      | Independent targets may run concurrently through bounded target-fair queues; no target can monopolize shared workers.                              |
 
 | **Scheduled task**        | **V1 default**                          |
 |---------------------------|-----------------------------------------|

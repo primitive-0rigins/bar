@@ -36,15 +36,22 @@ versioned operator rulings when overlap remains ambiguous.
   millisecond values fail closed. Applicability remains deliberately derived
   from durable declarations plus evidence-bound context instead of being
   stored as stale context-free state.
+- `bar-store` migration `0008` adds immutable scope-context evidence bound to a
+  target, revision, observed timestamp, and exact artifact span/hash. Persistence
+  is replay-idempotent and atomically audited; cross-target revision/artifact
+  references, invalid spans, blank values, malformed JSON, and negative stored
+  observation times fail closed. A caller-supplied source revision cannot
+  override stored revision identity, and snapshots reload after database reopen.
 
-All 101 repository tests pass; clippy `-D warnings` and fmt are clean.
-Implementation revisions: `5a9b3ef`, `f9e71af`.
+All 102 repository tests pass; clippy `-D warnings` and fmt are clean.
+Implementation revisions: `5a9b3ef`, `f9e71af`, `414be5c`.
 
 ### Remaining before Phase 4 completion
 
-- Bind `ScopeContext` to observed revision, deployment, environment,
-  configuration, component, mode, flags, and tenant evidence rather than
-  caller-supplied values alone.
+- Add trusted adapters or operator attestations that populate deployment,
+  environment, configuration, component, mode, flags, and tenant values. The
+  current snapshot proves target/revision/source provenance but does not infer
+  the semantic values from the cited bytes.
 - Add versioned, immutable operator rulings with expiry, supersession, audit,
   and deterministic reuse while scope/evidence is unchanged.
 - Add Phase 4 adversarial fixtures for overlapping scopes, late/expired
@@ -52,6 +59,19 @@ Implementation revisions: `5a9b3ef`, `f9e71af`.
 - Bind evaluation time to observed evidence and define validated semantic
   version-range interpretation; current source-revision matching is exact-value
   only.
+
+### Roadmap addition — concurrent multi-runtime monitoring
+
+- One BAR daemon will watch multiple registered runtimes concurrently. Each
+  target keeps isolated revisions, evidence, contracts, policy, audit subjects,
+  and per-target serialized scan/compaction work.
+- Shared workers and ingestion queues will be globally bounded and target-fair,
+  so a noisy runtime cannot starve another or violate BAR's resource contract.
+- Baseline concurrent watchers land with Phase 9 runtime adapters. Phase 22 is
+  reserved for fleet analytics and cross-target suggestions; it must not weaken
+  per-target authority or permit evidence leakage.
+- Acceptance requires simultaneous-change, noisy-neighbor, restart/replay, and
+  cross-target contamination tests before the capability is called delivered.
 
 ## Phase 3 — Contract extraction shadow (implementation complete)
 
