@@ -68,7 +68,7 @@ versioned operator rulings when overlap remains ambiguous.
   and inactive historical text.
 
 All 112 repository tests pass; clippy `-D warnings` and fmt are clean.
-Implementation revisions: `5a9b3ef`, `f9e71af`, `414be5c`, `15adcfd`, `ed0f016`, `2054c8d`, `a93a672`, `5483b93`.
+Implementation revisions: `5a9b3ef`, `f9e71af`, `414be5c`, `15adcfd`, `ed0f016`, `2054c8d`, `a93a672`, `5483b93`, `3e63c89`.
 
 ### Remaining before Phase 4 completion
 
@@ -125,9 +125,9 @@ Implementation revisions: `5a9b3ef`, `f9e71af`, `414be5c`, `15adcfd`, `ed0f016`,
   `openat`/no-follow traversal is required before BAR claims race-resistant
   monitoring of untrusted writable trees.
 - `crates/bar-store/src/lib.rs` remains the primary god-file hotspot: about
-  1,700 production lines plus its in-file test module. New ruling persistence
-  is isolated in `crates/bar-store/src/ruling.rs`; split audit,
-  target/inventory, and contract persistence in a dedicated behavior-preserving
+  1,700 production lines plus its in-file test module. Ruling, attestation,
+  and scope-context persistence are isolated in dedicated modules; split audit,
+  target/inventory, and contract persistence in a later behavior-preserving
   refactor.
 - `cargo audit` reports `RUSTSEC-2023-0071` for `rsa 0.9.10`, retained in
   `Cargo.lock` through SQLx's optional MySQL dependency. BAR enables only SQLite
