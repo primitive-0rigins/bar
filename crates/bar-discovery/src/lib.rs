@@ -27,6 +27,7 @@
 //! the heuristic is not trustworthy.
 
 pub mod classify;
+pub mod dependency;
 pub mod walk;
 
 use std::collections::HashMap;
@@ -154,6 +155,9 @@ pub struct ScanSummary {
 pub struct Inventory {
     pub artifacts: Vec<DiscoveredArtifact>,
     pub summary: ScanSummary,
+    /// Added, content-changed, and removed logical paths that must be processed
+    /// along with their dependency-graph dependents. Sorted and deduplicated.
+    pub invalidated_paths: Vec<String>,
 }
 
 /// Scans `root` under `config`, carrying unchanged files forward from `prior`
@@ -163,6 +167,7 @@ pub fn scan(root: &Path, config: &ScanConfig, prior: &PriorInventory) -> Result<
     let entries = walk::walk(root, config)?;
     let mut artifacts = Vec::with_capacity(entries.len());
     let mut summary = ScanSummary::default();
+    let mut invalidated_paths = std::collections::BTreeSet::new();
 
     for entry in &entries {
         let prior_art = prior.get(&entry.logical_path);
@@ -221,9 +226,15 @@ pub fn scan(root: &Path, config: &ScanConfig, prior: &PriorInventory) -> Result<
 
         // Content-level delta against the prior inventory.
         match prior_art {
-            None => summary.added += 1,
-            Some(p) if p.content_sha256 == artifact.content_sha256 => summary.unchanged += 1,
-            Some(_) => summary.changed += 1,
+            None => {
+                summary.added += 1;
+                invalidated_paths.insert(artifact.logical_path.clone());
+            }
+            Some(p) if artifact_unchanged(p, &artifact) => summary.unchanged += 1,
+            Some(_) => {
+                summary.changed += 1;
+                invalidated_paths.insert(artifact.logical_path.clone());
+            }
         }
 
         artifacts.push(artifact);
@@ -231,13 +242,24 @@ pub fn scan(root: &Path, config: &ScanConfig, prior: &PriorInventory) -> Result<
 
     let present: std::collections::HashSet<&str> =
         artifacts.iter().map(|a| a.logical_path.as_str()).collect();
-    summary.removed = prior
-        .keys()
-        .filter(|path| !present.contains(path.as_str()))
-        .count();
+    for path in prior.keys().filter(|path| !present.contains(path.as_str())) {
+        summary.removed += 1;
+        invalidated_paths.insert(path.clone());
+    }
     summary.total = artifacts.len();
 
-    Ok(Inventory { artifacts, summary })
+    Ok(Inventory {
+        artifacts,
+        summary,
+        invalidated_paths: invalidated_paths.into_iter().collect(),
+    })
+}
+
+fn artifact_unchanged(prior: &PriorArtifact, current: &DiscoveredArtifact) -> bool {
+    prior.content_sha256 == current.content_sha256
+        && (current.content_sha256 != UNHASHED_OVERSIZED
+            || (prior.size_bytes == current.size_bytes
+                && prior.modified_at_ms == current.modified_at_ms))
 }
 
 /// Reads a file once, returning a prefix of its content (for classification) and
@@ -347,6 +369,7 @@ mod tests {
         assert_eq!(second.summary.changed, 1);
         assert_eq!(second.summary.unchanged, 4, "the rest carry forward");
         assert_eq!(second.summary.total, 5);
+        assert_eq!(second.invalidated_paths, ["f2.txt"]);
     }
 
     #[test]
@@ -386,6 +409,7 @@ mod tests {
         assert_eq!(inv.summary.added, 1);
         assert_eq!(inv.summary.removed, 1);
         assert_eq!(inv.summary.total, 2);
+        assert_eq!(inv.invalidated_paths, ["gone.txt", "new.txt"]);
     }
 
     #[test]
@@ -402,6 +426,26 @@ mod tests {
         assert_eq!(inv.summary.oversized, 1);
         assert_eq!(inv.summary.hashed, 0, "oversized files are not read");
         assert_eq!(inv.artifacts[0].content_sha256, UNHASHED_OVERSIZED);
+    }
+
+    #[test]
+    fn oversized_metadata_change_is_invalidated_despite_shared_sentinel() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = canon(&dir);
+        let config = ScanConfig {
+            max_file_bytes: 4,
+            ..ScanConfig::default()
+        };
+        write(&root, "big.bin", b"12345");
+        let first = scan(&root, &config, &PriorInventory::new()).unwrap();
+        let prior = prior_from(&first);
+
+        write(&root, "big.bin", b"123456");
+        let second = scan(&root, &config, &prior).unwrap();
+
+        assert_eq!(second.summary.changed, 1);
+        assert_eq!(second.summary.unchanged, 0);
+        assert_eq!(second.invalidated_paths, ["big.bin"]);
     }
 
     #[test]

@@ -13,10 +13,12 @@
 //! Queries use sqlx's runtime-checked `query`/`query_as` functions (not the
 //! compile-time macros), so a clean build never needs a live database.
 
+use std::collections::HashMap;
 use std::str::FromStr;
 
 use bar_audit::{record_hash, AuditCategory, AuditChain, AuditEvent, AuditRecord, GENESIS};
 use bar_core::{Error, Result, RevisionId, Sha256Digest, TargetId};
+use bar_discovery::dependency::ArtifactDependency;
 use bar_discovery::{ArtifactKind, Inventory, PriorArtifact, PriorInventory};
 use bar_target::{ConnectorKind, ResolvedTarget, RevisionIdentity, TargetStatus};
 use sqlx::sqlite::{Sqlite, SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
@@ -314,6 +316,98 @@ impl Store {
             .map(|row| Ok((row.logical_path.clone(), row.into_prior()?)))
             .collect()
     }
+
+    /// Persists validated dependency edges for artifacts in one revision.
+    /// Edges point from the dependent artifact to the artifact it consumes, as
+    /// in Appendix E. Repeating the same set is idempotent.
+    pub async fn persist_dependencies(
+        &self,
+        revision_id: &RevisionId,
+        dependencies: &[ArtifactDependency],
+    ) -> Result<()> {
+        let mut tx = self.pool.begin().await.map_err(storage("begin"))?;
+        let revision_exists: i64 = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM target_revisions WHERE revision_id = ?)",
+        )
+        .bind(revision_id.to_string())
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(storage("check dependency revision"))?;
+        if revision_exists == 0 {
+            return Err(Error::Corrupt(format!(
+                "artifact dependencies reference unknown revision {revision_id}"
+            )));
+        }
+
+        let rows: Vec<(String, String)> =
+            sqlx::query_as("SELECT logical_path, artifact_id FROM artifacts WHERE revision_id = ?")
+                .bind(revision_id.to_string())
+                .fetch_all(&mut *tx)
+                .await
+                .map_err(storage("load dependency artifacts"))?;
+        let artifact_ids: HashMap<_, _> = rows.into_iter().collect();
+
+        for dependency in dependencies {
+            let from_id = artifact_ids
+                .get(dependency.dependent_path())
+                .ok_or_else(|| {
+                    missing_dependency_artifact(revision_id, dependency.dependent_path())
+                })?;
+            let to_id = artifact_ids
+                .get(dependency.dependency_path())
+                .ok_or_else(|| {
+                    missing_dependency_artifact(revision_id, dependency.dependency_path())
+                })?;
+            sqlx::query(
+                "INSERT INTO artifact_dependencies \
+                 (from_artifact_id, to_artifact_id, relation_kind) \
+                 VALUES (?, ?, ?) ON CONFLICT DO NOTHING",
+            )
+            .bind(from_id)
+            .bind(to_id)
+            .bind(dependency.relation_kind())
+            .execute(&mut *tx)
+            .await
+            .map_err(storage("insert artifact dependency"))?;
+        }
+
+        tx.commit().await.map_err(storage("commit"))?;
+        Ok(())
+    }
+
+    /// Loads dependency edges for one revision using logical paths, ready to
+    /// build a [`bar_discovery::dependency::DependencyGraph`].
+    pub async fn load_dependencies(
+        &self,
+        revision_id: &RevisionId,
+    ) -> Result<Vec<ArtifactDependency>> {
+        let rows: Vec<DependencyRow> = sqlx::query_as(
+            "SELECT dependent.logical_path AS dependent_path, \
+                    dependency.logical_path AS dependency_path, edge.relation_kind \
+             FROM artifact_dependencies edge \
+             JOIN artifacts dependent ON dependent.artifact_id = edge.from_artifact_id \
+             JOIN artifacts dependency ON dependency.artifact_id = edge.to_artifact_id \
+             WHERE dependent.revision_id = ? AND dependency.revision_id = ? \
+             ORDER BY dependent.logical_path, dependency.logical_path, edge.relation_kind",
+        )
+        .bind(revision_id.to_string())
+        .bind(revision_id.to_string())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(storage("load artifact dependencies"))?;
+
+        rows.into_iter()
+            .map(|row| {
+                ArtifactDependency::new(row.dependent_path, row.dependency_path, row.relation_kind)
+            })
+            .collect()
+    }
+}
+
+fn missing_dependency_artifact(revision_id: &RevisionId, path: &str) -> Error {
+    Error::Corrupt(format!(
+        "artifact dependency references missing path `{path}` in {revision_id}"
+    ))
 }
 
 /// Builds a scan-level audit event.
@@ -441,6 +535,13 @@ struct ArtifactRow {
     source_of_truth: i64,
     size_bytes: i64,
     modified_at_ms: Option<i64>,
+}
+
+#[derive(FromRow)]
+struct DependencyRow {
+    dependent_path: String,
+    dependency_path: String,
+    relation_kind: String,
 }
 
 impl ArtifactRow {
@@ -863,6 +964,117 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(store.load_inventory(&r2).await.unwrap().len(), 4);
+    }
+
+    #[tokio::test]
+    async fn persisted_dependencies_select_only_changed_artifact_and_dependents() {
+        use bar_discovery::dependency::{ArtifactDependency, DependencyGraph};
+
+        let repo = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(repo.path()).unwrap();
+        write_file(&root, "schema/api.json", br#"{"version":1}"#);
+        write_file(&root, "src/service.rs", b"service");
+        write_file(&root, "src/api.rs", b"api");
+        write_file(&root, "src/unrelated.rs", b"unrelated");
+
+        let (store, _dir) = temp_store().await;
+        let target_id = store
+            .register_target(&tree_target(&root), T0)
+            .await
+            .unwrap()
+            .target_id;
+        let r1 = store
+            .record_revision(&target_id, &revision("c", None), T0)
+            .await
+            .unwrap()
+            .revision_id;
+        let cfg = bar_discovery::ScanConfig::default();
+        let first = bar_discovery::scan(&root, &cfg, &PriorInventory::new()).unwrap();
+        store
+            .persist_inventory(&target_id, &r1, &first, T0)
+            .await
+            .unwrap();
+
+        let dependencies = vec![
+            ArtifactDependency::new("src/api.rs", "src/service.rs", "imports").unwrap(),
+            ArtifactDependency::new("src/service.rs", "schema/api.json", "reads").unwrap(),
+        ];
+        store
+            .persist_dependencies(&r1, &dependencies)
+            .await
+            .unwrap();
+        store
+            .persist_dependencies(&r1, &dependencies)
+            .await
+            .unwrap();
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM artifact_dependencies")
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 2, "repeated edge persistence is idempotent");
+
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        write_file(&root, "schema/api.json", br#"{"version":2}"#);
+        let prior = store.load_inventory(&r1).await.unwrap();
+        let second = bar_discovery::scan(&root, &cfg, &prior).unwrap();
+        assert_eq!(second.summary.hashed, 1);
+        assert_eq!(second.invalidated_paths, ["schema/api.json"]);
+
+        let loaded = store.load_dependencies(&r1).await.unwrap();
+        assert_eq!(loaded, dependencies);
+        let plan = DependencyGraph::from_edges(&loaded)
+            .reparse_plan(second.invalidated_paths.iter().map(String::as_str));
+        assert_eq!(
+            plan.paths(),
+            ["schema/api.json", "src/api.rs", "src/service.rs"]
+        );
+        assert!(!plan.paths().iter().any(|p| p == "src/unrelated.rs"));
+    }
+
+    #[tokio::test]
+    async fn dependency_persistence_rolls_back_on_missing_endpoint() {
+        use bar_discovery::dependency::ArtifactDependency;
+
+        let repo = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(repo.path()).unwrap();
+        write_file(&root, "a.rs", b"a");
+        write_file(&root, "b.rs", b"b");
+
+        let (store, _dir) = temp_store().await;
+        let target_id = store
+            .register_target(&tree_target(&root), T0)
+            .await
+            .unwrap()
+            .target_id;
+        let revision_id = store
+            .record_revision(&target_id, &revision("c", None), T0)
+            .await
+            .unwrap()
+            .revision_id;
+        let inventory = bar_discovery::scan(
+            &root,
+            &bar_discovery::ScanConfig::default(),
+            &PriorInventory::new(),
+        )
+        .unwrap();
+        store
+            .persist_inventory(&target_id, &revision_id, &inventory, T0)
+            .await
+            .unwrap();
+
+        let dependencies = [
+            ArtifactDependency::new("a.rs", "b.rs", "imports").unwrap(),
+            ArtifactDependency::new("a.rs", "missing.rs", "imports").unwrap(),
+        ];
+        assert!(store
+            .persist_dependencies(&revision_id, &dependencies)
+            .await
+            .is_err());
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM artifact_dependencies")
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 0, "the partial graph transaction rolled back");
     }
 
     fn git_available() -> bool {

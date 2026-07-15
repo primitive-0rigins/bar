@@ -7,8 +7,7 @@
 -- (spec §19) bounds the growth in a later phase.
 --
 -- Timestamps are BIGINT epoch milliseconds, consistent with earlier migrations.
--- artifact_dependencies (Appendix E) is intentionally deferred to the phase that
--- produces edges (static analysis); migrations are additive.
+-- Dependency edges are added by migration 0004.
 
 CREATE TABLE artifacts (
     artifact_id      TEXT    PRIMARY KEY,
