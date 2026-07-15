@@ -44,9 +44,16 @@ versioned operator rulings when overlap remains ambiguous.
   and negative stored observation times fail closed. A caller-supplied source
   revision cannot override stored revision identity, and snapshots reload after
   database reopen.
+- `bar-contract::ruling` and `bar-store` migration `0009` add immutable,
+  source-context-bound operator rulings. The store validates contract and
+  evidence target ownership, records an ordered contract-reference index, and
+  audits creation and supersession atomically. An unchanged ambiguity reuses its
+  active ruling; an edit creates a replacement record; expiry permits a new
+  ruling; replay is idempotent; corrupt persisted links, target boundaries,
+  timestamps, or serialized values fail closed on reload.
 
-All 108 repository tests pass; clippy `-D warnings` and fmt are clean.
-Implementation revisions: `5a9b3ef`, `f9e71af`, `414be5c`, `15adcfd`.
+All 110 repository tests pass; clippy `-D warnings` and fmt are clean.
+Implementation revisions: `5a9b3ef`, `f9e71af`, `414be5c`, `15adcfd`, `ed0f016`.
 
 ### Remaining before Phase 4 completion
 
@@ -54,8 +61,9 @@ Implementation revisions: `5a9b3ef`, `f9e71af`, `414be5c`, `15adcfd`.
   environment, configuration, component, mode, flags, and tenant values. The
   current snapshot proves target/revision/source provenance but does not infer
   the semantic values from the cited bytes.
-- Add versioned, immutable operator rulings with expiry, supersession, audit,
-  and deterministic reuse while scope/evidence is unchanged.
+- Model the remaining operator dispositions (defer, reject, and request more
+  evidence). The durable ruling core currently captures a chosen interpretation
+  and its rejected alternatives; the dashboard/API workflow is Phase 8.
 - Add Phase 4 adversarial fixtures for overlapping scopes, late/expired
   evidence, scoped exceptions, and repeated ambiguity, then completion evidence.
 - Bind evaluation time to observed evidence and define validated semantic
@@ -102,11 +110,11 @@ Implementation revisions: `5a9b3ef`, `f9e71af`, `414be5c`, `15adcfd`.
   directory entries between resolution and open. Descriptor-relative
   `openat`/no-follow traversal is required before BAR claims race-resistant
   monitoring of untrusted writable trees.
-- `crates/bar-store/src/lib.rs` is the only current god-file hotspot: about
-  1,700 production lines plus its in-file test module. Split it by audit,
+- `crates/bar-store/src/lib.rs` remains the primary god-file hotspot: about
+  1,700 production lines plus its in-file test module. New ruling persistence
+  is isolated in `crates/bar-store/src/ruling.rs`; split audit,
   target/inventory, and contract persistence in a dedicated behavior-preserving
-  refactor; mixing that mechanical move into security changes would obscure
-  review.
+  refactor.
 - `cargo audit` reports `RUSTSEC-2023-0071` for `rsa 0.9.10`, retained in
   `Cargo.lock` through SQLx's optional MySQL dependency. BAR enables only SQLite
   and PostgreSQL, `cargo tree -i rsa` shows no compiled dependency path, and no
