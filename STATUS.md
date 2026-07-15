@@ -2,7 +2,47 @@
 
 Living status of the Behavioral Assurance Runtime build. Newest first.
 
-## Current phase: 1 — Target registration and identity
+## Current phase: 2 — Artifact discovery
+
+Per [`docs/spec.md`](docs/spec.md) §21, Phase 2 delivers an inventory of
+docs/code/tests/schemas/config/CI/diagrams/generated files, a hash cache, and an
+incremental scan.
+
+### Done
+
+- `bar-discovery`: the discovery engine (pure crate: walk + classify +
+  incremental scan, no DB, read-only). **Cross-revision carry-forward** is the
+  core — because a target's `RevisionId` changes on every content edit and
+  artifacts are unique per `(revision, logical_path)`, a naive re-scan would
+  re-hash every file. `scan` instead carries unchanged files (same size + mtime)
+  forward from the prior revision's inventory without reading them, hashing only
+  what changed. `ScanSummary::hashed` reports the real cost, and selective
+  rehashing is proven by asserting `hashed == 1` after a one-file edit — unit and
+  end-to-end through the database.
+- `bar-discovery`: `ScanMode::Full` re-hashes everything as the integrity
+  fallback for the mtime heuristic's blind spot (a content edit preserving size +
+  mtime). Boundary-respecting walk: never descends `.git`, skips nested
+  repositories, guards symlink escape and loops, honors hidden/oversized policy
+  (oversized files inventoried with a non-hex sentinel, never read). Deterministic
+  Tier-0 classification into `ArtifactKind` with a fixed precedence.
+- `bar-store`: migration `0003` (`artifacts`); `persist_inventory` inserts a
+  scan idempotently (content-derived `ArtifactId`) bracketed by
+  `target.scan.started`/`completed` audit events; `load_inventory` reloads a
+  revision's inventory to drive the next scan's carry-forward.
+
+The no-full-rescan exit criterion is met and tested. The implementation rehashes
+only a changed file, but dependency-aware parsing does not exist yet, so the
+"reparses only dependents" criterion is **partial** rather than complete. All 72
+tests pass; clippy `-D warnings` and fmt are clean. Phase evidence per spec
+Appendix AP: [`docs/phase-evidence/phase-2.md`](docs/phase-evidence/phase-2.md)
+— **implementation incomplete; human review pending**.
+
+`artifact_dependencies` and dependency-aware reparsing must land before Phase 2
+closes. Per-artifact delta audit events remain deferred to evidence invalidation.
+The daemon scan loop that picks the "prior" revision is later work; Phase 2 lands
+scan + persistence as library capabilities (shadow-first).
+
+## Phase 1 — Target registration and identity
 
 Per [`docs/spec.md`](docs/spec.md) §21, Phase 1 delivers a local Git/filesystem
 connector, commit/dirty revision identity, an idempotent target registry, and a

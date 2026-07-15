@@ -87,6 +87,7 @@ version = "0.0.0"
 dependencies = [
  "bar-audit",
  "bar-core",
+ "bar-discovery",
  "bar-target",
  "sqlx",
  "tempfile",

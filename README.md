@@ -6,10 +6,11 @@ itself, compares that intent against implementation and live execution, prepares
 repair-ready findings, waits for **human approval**, hands approved work to a
 connected coding agent, and then independently verifies the result.
 
-> **Status:** Phase 0 — foundation. The workspace, core vocabulary, and typed
-> error policy are in place and green. Build progresses through the phased manual
-> in [`docs/spec.md`](docs/spec.md) §21. See [`STATUS.md`](STATUS.md) for the
-> current state.
+> **Status:** Phase 2 — artifact discovery. Target registration and identity,
+> boundary-safe discovery, incremental inventory, and persistence are in place
+> and green. Dependency-aware reparsing remains open before Phase 2 can close.
+> Build progresses through the phased manual in [`docs/spec.md`](docs/spec.md)
+> §21. See [`STATUS.md`](STATUS.md) for the current state.
 
 ## What it is
 
@@ -58,6 +59,8 @@ bar/
 │   ├── bar-config/    # configuration contract (spec Appendix C)
 │   ├── bar-audit/     # append-only hash-chained audit log
 │   ├── bar-store/     # sqlx store + migrations (SQLite / PostgreSQL)
+│   ├── bar-target/    # read-only target resolution and revision identity
+│   ├── bar-discovery/ # boundary-safe classification and incremental inventory
 │   ├── bar-bench/     # resource benchmark harness (spec §4, §22)
 │   └── bar-daemon/    # the mandatory model-free process (spec §5.1)
 ├── migrations/        # root SQL migrations, embedded at compile time
