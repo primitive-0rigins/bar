@@ -6,15 +6,13 @@ itself, compares that intent against implementation and live execution, prepares
 repair-ready findings, waits for **human approval**, hands approved work to a
 connected coding agent, and then independently verifies the result.
 
-> **Status:** Phase 3 — contract extraction shadow, implementation complete and
-> pending human review. Deterministic
-> source-bound claim extraction, cross-artifact hierarchy/glossary/conflict
-> candidate analysis, strict optional-model output validation, honest
-> disabled/unavailable model state, and idempotent durable candidate persistence
-> are in place and green; Phase 4 scope, temporal resolution, and adjudication
-> are next. Build progresses through
+> **Status:** Phase 4 — contract scope, temporal resolution, and adjudication,
+> in progress. The pure applicability resolver implements closed fail-safe
+> states, inclusive validity windows, documented scope precedence, and mandatory
+> adjudication for ties or unknown context. Phase 3 extraction is implementation
+> complete and pending human review. Build progresses through
 > the phased manual in [`docs/spec.md`](docs/spec.md) §21. See [`STATUS.md`](STATUS.md)
-> for the current state and Phase 4 roadmap.
+> for the current state and remaining Phase 4 work.
 
 ## What it is
 

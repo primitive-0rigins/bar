@@ -2,7 +2,50 @@
 
 Living status of the Behavioral Assurance Runtime build. Newest first.
 
-## Current phase: 3 — Contract extraction shadow (implementation complete)
+## Current phase: 4 — Contract scope, temporal resolver, adjudication (in progress)
+
+Per [`docs/spec.md`](docs/spec.md) §7.2–§7.4 and §21, Phase 4 resolves scope
+precedence and temporal validity, preserves supersession history, and requires
+versioned operator rulings when overlap remains ambiguous.
+
+### Delivered
+
+- `bar-contract::scope` defines strict `ContractScope`, `ScopeContext`, and
+  `TemporalWindow` inputs plus closed `applicable`, `not_applicable`, and
+  `ambiguous` states. JSON rejects unknown fields/states; blank declared scope
+  identifiers and inverted time ranges resolve as ambiguous instead of matching.
+- Applicability uses inclusive millisecond validity bounds. Future, expired,
+  historical, planned, example, and explicitly superseded contracts are not
+  applicable in the evaluated context; missing required context is ambiguous,
+  while an explicit mismatch is not applicable.
+- The resolver encodes the §7.2 precedence tiers: exact deployment/config,
+  exact environment+component, feature flag/mode, revision-bounded component,
+  then product-wide. Partially specified combinations outside those tiers have
+  no invented rank.
+- Opposing applicable contracts produce only `scoped_override` when one tier
+  clearly outranks the other. Equal, unranked, malformed, or context-unknown
+  overlap returns `adjudication_required`; the resolver exposes no automatic
+  definitive-defect state.
+
+All 100 repository tests pass; clippy `-D warnings` and fmt are clean.
+Implementation revision: `5a9b3ef`.
+
+### Remaining before Phase 4 completion
+
+- Persist and reload scope, validity, applicability, and supersession with
+  migration replay, idempotency, rollback, and unknown-state tests.
+- Bind `ScopeContext` to observed revision, deployment, environment,
+  configuration, component, mode, flags, and tenant evidence rather than
+  caller-supplied values alone.
+- Add versioned, immutable operator rulings with expiry, supersession, audit,
+  and deterministic reuse while scope/evidence is unchanged.
+- Add Phase 4 adversarial fixtures for overlapping scopes, late/expired
+  evidence, scoped exceptions, and repeated ambiguity, then completion evidence.
+- Convert external timestamps/ranges into the resolver's millisecond/exact-value
+  representation at a validated boundary; semantic version ranges are not yet
+  interpreted.
+
+## Phase 3 — Contract extraction shadow (implementation complete)
 
 Per [`docs/spec.md`](docs/spec.md) §21 and Appendix H.1, Phase 3 classifies
 normative claims, preserves exact source spans, proposes hierarchy/glossary/
