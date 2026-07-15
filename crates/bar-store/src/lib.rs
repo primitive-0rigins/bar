@@ -408,7 +408,7 @@ impl Store {
 
     /// Persists source-bound shadow contract candidates idempotently. Every
     /// newly inserted contract and its source reference share one transaction
-    /// with the `contract.extracted` audit event.
+    /// with its audited evidence mutation.
     pub async fn persist_contracts(
         &self,
         target_id: &TargetId,

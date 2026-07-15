@@ -6,11 +6,11 @@ itself, compares that intent against implementation and live execution, prepares
 repair-ready findings, waits for **human approval**, hands approved work to a
 connected coding agent, and then independently verifies the result.
 
-> **Status:** Phase 2 — artifact discovery. Target registration and identity,
-> boundary-safe incremental inventory, dependency persistence, and deterministic
-> reparse planning are in place and green. Phase 3 contract extraction is next.
-> Build progresses through the phased manual in [`docs/spec.md`](docs/spec.md)
-> §21. See [`STATUS.md`](STATUS.md) for the current state.
+> **Status:** Phase 3 — contract extraction shadow, in progress. Deterministic
+> source-bound claim extraction, strict optional-model output validation, and
+> idempotent shadow-contract persistence are in place and green. Build progresses
+> through the phased manual in [`docs/spec.md`](docs/spec.md) §21. See
+> [`STATUS.md`](STATUS.md) for the current state and remaining Phase 3 work.
 
 ## What it is
 
@@ -61,6 +61,7 @@ bar/
 │   ├── bar-store/     # sqlx store + migrations (SQLite / PostgreSQL)
 │   ├── bar-target/    # read-only target resolution and revision identity
 │   ├── bar-discovery/ # incremental inventory and dependency-aware reparse plans
+│   ├── bar-contract/  # source-bound shadow claim extraction and validation
 │   ├── bar-bench/     # resource benchmark harness (spec §4, §22)
 │   └── bar-daemon/    # the mandatory model-free process (spec §5.1)
 ├── migrations/        # root SQL migrations, embedded at compile time

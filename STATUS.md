@@ -2,7 +2,51 @@
 
 Living status of the Behavioral Assurance Runtime build. Newest first.
 
-## Current phase: 2 — Artifact discovery (implementation complete)
+## Current phase: 3 — Contract extraction shadow (in progress)
+
+Per [`docs/spec.md`](docs/spec.md) §21 and Appendix H.1, Phase 3 classifies
+normative claims, preserves exact source spans, proposes hierarchy/glossary/
+conflict candidates, and treats optional-model output as untrusted data.
+
+### Delivered
+
+- `bar-contract`: deterministic extraction from supported prose/list segments.
+  It recognizes required, prohibited, expected, and planned language; assigns a
+  conservative behavioral/architecture level; and fingerprints the normalized
+  statement plus exact source identity and byte span.
+- Every extracted claim carries an `ArtifactId`, exact UTF-8 byte offsets, and a
+  SHA-256 of the exact cited bytes. `ArtifactText` first verifies the complete
+  text against the discovery inventory hash, so extraction cannot silently bind
+  to different content.
+- Strict optional-model JSON validation uses `deny_unknown_fields`, bounded
+  output/claim counts, closed normative/level vocabularies, UTF-8-safe offsets,
+  exact-text hashes, and statement-to-source equality. Malformed JSON,
+  fabricated statements, unknown fields/tokens, invalid spans, and known prompt
+  injection markers are rejected. The deterministic path remains independent
+  of a model.
+- `bar-store`: migration `0005` adds revision-scoped `contracts` and mandatory
+  `contract_sources`. Persistence is fingerprint-idempotent and records
+  each newly extracted contract as an audited evidence mutation in the same
+  transaction. A missing source rolls back the full contract batch; unknown
+  persisted vocabulary/state is rejected during reload.
+
+The implemented slice passes the two Phase 3 safety invariants: every emitted
+claim cites verified source bytes, and malformed or source-inconsistent model
+output is rejected. The full phase is not complete. All 85 repository tests
+pass; clippy `-D warnings` and fmt are clean. Implementation revision:
+`3fb0fc6`.
+
+### Remaining before Phase 3 completion
+
+- Paragraph, table-row, comment-block, and richer Markdown segmentation.
+- Explicit hierarchy candidates and structural parent attachment.
+- Target glossary and alias candidates without rewriting source text.
+- Conflict candidates that preserve competing claims without adjudicating them.
+- Optional worker integration and its explicit disabled/unavailable runtime
+  state; current code validates bounded output but invokes no model.
+- Canonical fixture/golden-corpus coverage and Phase 3 completion evidence.
+
+## Phase 2 — Artifact discovery (implementation complete)
 
 Per [`docs/spec.md`](docs/spec.md) §21, Phase 2 delivers an inventory of
 docs/code/tests/schemas/config/CI/diagrams/generated files, a hash cache, and an
