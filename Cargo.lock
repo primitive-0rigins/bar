@@ -100,6 +100,7 @@ dependencies = [
  "bar-core",
  "bar-discovery",
  "bar-target",
+ "serde_json",
  "sqlx",
  "tempfile",
  "tokio",

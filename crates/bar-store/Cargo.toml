@@ -14,6 +14,7 @@ bar-audit.workspace = true
 bar-target.workspace = true
 bar-discovery.workspace = true
 bar-contract.workspace = true
+serde_json.workspace = true
 sqlx.workspace = true
 
 [dev-dependencies]

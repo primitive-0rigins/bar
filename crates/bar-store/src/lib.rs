@@ -17,7 +17,10 @@ use std::collections::HashMap;
 use std::str::FromStr;
 
 use bar_audit::{record_hash, AuditCategory, AuditChain, AuditEvent, AuditRecord, GENESIS};
-use bar_contract::{ExtractedClaim, SourceRef};
+use bar_contract::{
+    glossary_ambiguities, ConflictCandidate, CorpusAnalysis, ExtractedClaim,
+    GlossaryAmbiguityCandidate, GlossaryCandidate, HierarchyCandidate, SourceRef,
+};
 use bar_core::{
     ContractId, ContractLevel, Error, NormativeKind, Result, RevisionId, Sha256Digest, TargetId,
 };
@@ -539,6 +542,233 @@ impl Store {
         .map_err(storage("load contracts"))?;
         rows.into_iter().map(ContractRow::into_contract).collect()
     }
+
+    /// Persists structural hierarchy, glossary, and conflict candidates after
+    /// their claim fingerprints have been resolved to contracts. The complete
+    /// candidate set is validated before any row is written.
+    pub async fn persist_analysis_candidates(
+        &self,
+        target_id: &TargetId,
+        revision_id: &RevisionId,
+        analysis: &CorpusAnalysis,
+        now_ms: u64,
+    ) -> Result<CandidatePersistence> {
+        let mut tx = self.pool.begin().await.map_err(storage("begin"))?;
+        let revision_exists: i64 = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM target_revisions \
+             WHERE revision_id = ? AND target_id = ?)",
+        )
+        .bind(revision_id.to_string())
+        .bind(target_id.to_string())
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(storage("check candidate revision"))?;
+        if revision_exists == 0 {
+            return Err(Error::Corrupt(format!(
+                "analysis candidates reference unknown target revision {revision_id}"
+            )));
+        }
+
+        let artifacts: Vec<String> =
+            sqlx::query_scalar("SELECT artifact_id FROM artifacts WHERE revision_id = ?")
+                .bind(revision_id.to_string())
+                .fetch_all(&mut *tx)
+                .await
+                .map_err(storage("load candidate artifacts"))?;
+        let artifacts: std::collections::HashSet<_> = artifacts.into_iter().collect();
+        let contracts: Vec<(String, String)> =
+            sqlx::query_as("SELECT fingerprint, contract_id FROM contracts WHERE revision_id = ?")
+                .bind(revision_id.to_string())
+                .fetch_all(&mut *tx)
+                .await
+                .map_err(storage("load candidate contracts"))?;
+        let contracts: HashMap<_, _> = contracts.into_iter().collect();
+
+        for candidate in &analysis.hierarchy {
+            require_contract(&contracts, &candidate.child_fingerprint)?;
+            require_source_artifact(&artifacts, revision_id, &candidate.source)?;
+        }
+        for candidate in &analysis.glossary {
+            require_source_artifact(&artifacts, revision_id, &candidate.source)?;
+        }
+        for candidate in &analysis.conflicts {
+            require_contract(&contracts, &candidate.left_fingerprint)?;
+            require_contract(&contracts, &candidate.right_fingerprint)?;
+        }
+
+        let mut result = CandidatePersistence::default();
+        for candidate in &analysis.hierarchy {
+            let contract_id = require_contract(&contracts, &candidate.child_fingerprint)?;
+            let inserted = sqlx::query(
+                "INSERT INTO contract_hierarchy_candidates \
+                 (child_contract_id, heading, heading_level, artifact_id, start_offset, \
+                  end_offset, exact_text_sha256) VALUES (?, ?, ?, ?, ?, ?, ?) \
+                 ON CONFLICT DO NOTHING",
+            )
+            .bind(contract_id)
+            .bind(&candidate.heading)
+            .bind(i64::from(candidate.heading_level))
+            .bind(candidate.source.artifact_id.to_string())
+            .bind(candidate.source.start_offset as i64)
+            .bind(candidate.source.end_offset as i64)
+            .bind(candidate.source.exact_text_sha256.to_string())
+            .execute(&mut *tx)
+            .await
+            .map_err(storage("insert hierarchy candidate"))?
+            .rows_affected();
+            result.hierarchy_inserted += inserted as usize;
+        }
+        for candidate in &analysis.glossary {
+            let aliases = serde_json::to_string(&candidate.aliases)
+                .map_err(|e| Error::Corrupt(format!("encode glossary aliases: {e}")))?;
+            let inserted = sqlx::query(
+                "INSERT INTO glossary_candidates \
+                 (fingerprint, target_id, revision_id, canonical, normalized_term, definition, \
+                  aliases_json, artifact_id, start_offset, end_offset, exact_text_sha256) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
+            )
+            .bind(candidate.fingerprint.to_string())
+            .bind(target_id.to_string())
+            .bind(revision_id.to_string())
+            .bind(&candidate.canonical)
+            .bind(candidate.canonical.to_lowercase())
+            .bind(&candidate.definition)
+            .bind(aliases)
+            .bind(candidate.source.artifact_id.to_string())
+            .bind(candidate.source.start_offset as i64)
+            .bind(candidate.source.end_offset as i64)
+            .bind(candidate.source.exact_text_sha256.to_string())
+            .execute(&mut *tx)
+            .await
+            .map_err(storage("insert glossary candidate"))?
+            .rows_affected();
+            result.glossary_inserted += inserted as usize;
+        }
+        for candidate in &analysis.conflicts {
+            let left = require_contract(&contracts, &candidate.left_fingerprint)?;
+            let right = require_contract(&contracts, &candidate.right_fingerprint)?;
+            let (left, right) = if left <= right {
+                (left, right)
+            } else {
+                (right, left)
+            };
+            let inserted = sqlx::query(
+                "INSERT INTO contract_conflict_candidates \
+                 (left_contract_id, right_contract_id, shared_subject, status) \
+                 VALUES (?, ?, ?, 'candidate') ON CONFLICT DO NOTHING",
+            )
+            .bind(left)
+            .bind(right)
+            .bind(&candidate.shared_subject)
+            .execute(&mut *tx)
+            .await
+            .map_err(storage("insert conflict candidate"))?
+            .rows_affected();
+            result.conflicts_inserted += inserted as usize;
+            if inserted > 0 {
+                append_audit(
+                    &mut tx,
+                    AuditEvent {
+                        category: AuditCategory::EvidenceMutation,
+                        actor: SYSTEM_ACTOR.to_string(),
+                        summary: "detected provisional contract conflict".into(),
+                        subject: Some(format!("{left} <> {right}")),
+                        occurred_at_ms: now_ms,
+                    },
+                )
+                .await?;
+            }
+        }
+
+        tx.commit().await.map_err(storage("commit"))?;
+        Ok(result)
+    }
+
+    /// Reloads persisted Phase 3 candidates. Corrupt JSON, spans, hashes, or
+    /// candidate states are rejected rather than exposed for review.
+    pub async fn load_analysis_candidates(
+        &self,
+        revision_id: &RevisionId,
+    ) -> Result<StoredAnalysisCandidates> {
+        let hierarchy_rows: Vec<HierarchyRow> = sqlx::query_as(
+            "SELECT c.fingerprint AS child_fingerprint, h.heading, h.heading_level, \
+                    h.artifact_id, h.start_offset, h.end_offset, h.exact_text_sha256 \
+             FROM contract_hierarchy_candidates h \
+             JOIN contracts c ON c.contract_id = h.child_contract_id \
+             WHERE c.revision_id = ? ORDER BY c.fingerprint, h.start_offset",
+        )
+        .bind(revision_id.to_string())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(storage("load hierarchy candidates"))?;
+        let glossary_rows: Vec<GlossaryRow> = sqlx::query_as(
+            "SELECT fingerprint, canonical, definition, aliases_json, artifact_id, \
+                    start_offset, end_offset, exact_text_sha256 \
+             FROM glossary_candidates WHERE revision_id = ? ORDER BY fingerprint",
+        )
+        .bind(revision_id.to_string())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(storage("load glossary candidates"))?;
+        let conflict_rows: Vec<ConflictRow> = sqlx::query_as(
+            "SELECT left_contract.fingerprint AS left_fingerprint, \
+                    right_contract.fingerprint AS right_fingerprint, \
+                    candidate.shared_subject, candidate.status \
+             FROM contract_conflict_candidates candidate \
+             JOIN contracts left_contract ON left_contract.contract_id = candidate.left_contract_id \
+             JOIN contracts right_contract ON right_contract.contract_id = candidate.right_contract_id \
+             WHERE left_contract.revision_id = ? AND right_contract.revision_id = ? \
+             ORDER BY left_contract.fingerprint, right_contract.fingerprint",
+        )
+        .bind(revision_id.to_string())
+        .bind(revision_id.to_string())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(storage("load conflict candidates"))?;
+
+        let glossary = glossary_rows
+            .into_iter()
+            .map(GlossaryRow::into_candidate)
+            .collect::<Result<Vec<_>>>()?;
+        let glossary_ambiguities = glossary_ambiguities(&glossary);
+        Ok(StoredAnalysisCandidates {
+            hierarchy: hierarchy_rows
+                .into_iter()
+                .map(HierarchyRow::into_candidate)
+                .collect::<Result<_>>()?,
+            glossary,
+            glossary_ambiguities,
+            conflicts: conflict_rows
+                .into_iter()
+                .map(ConflictRow::into_candidate)
+                .collect::<Result<_>>()?,
+        })
+    }
+}
+
+fn require_contract<'a>(
+    contracts: &'a HashMap<String, String>,
+    fingerprint: &Sha256Digest,
+) -> Result<&'a str> {
+    contracts
+        .get(&fingerprint.to_string())
+        .map(String::as_str)
+        .ok_or_else(|| Error::Corrupt(format!("candidate references unknown claim {fingerprint}")))
+}
+
+fn require_source_artifact(
+    artifacts: &std::collections::HashSet<String>,
+    revision_id: &RevisionId,
+    source: &SourceRef,
+) -> Result<()> {
+    if artifacts.contains(&source.artifact_id.to_string()) {
+        Ok(())
+    } else {
+        Err(Error::Corrupt(format!(
+            "candidate source {} does not belong to {revision_id}",
+            source.artifact_id
+        )))
+    }
 }
 
 fn missing_dependency_artifact(revision_id: &RevisionId, path: &str) -> Error {
@@ -631,6 +861,23 @@ pub struct RevisionRecord {
 pub struct ContractPersistence {
     pub contract_ids: Vec<ContractId>,
     pub inserted: usize,
+}
+
+/// Counts newly inserted candidate rows during an idempotent persistence call.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CandidatePersistence {
+    pub hierarchy_inserted: usize,
+    pub glossary_inserted: usize,
+    pub conflicts_inserted: usize,
+}
+
+/// Reloaded durable Phase 3 candidate state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredAnalysisCandidates {
+    pub hierarchy: Vec<HierarchyCandidate>,
+    pub glossary: Vec<GlossaryCandidate>,
+    pub glossary_ambiguities: Vec<GlossaryAmbiguityCandidate>,
+    pub conflicts: Vec<ConflictCandidate>,
 }
 
 /// One persisted shadow contract with its mandatory source binding.
@@ -759,6 +1006,114 @@ impl ContractRow {
             },
         })
     }
+}
+
+#[derive(FromRow)]
+struct HierarchyRow {
+    child_fingerprint: String,
+    heading: String,
+    heading_level: i64,
+    artifact_id: String,
+    start_offset: i64,
+    end_offset: i64,
+    exact_text_sha256: String,
+}
+
+impl HierarchyRow {
+    fn into_candidate(self) -> Result<HierarchyCandidate> {
+        let heading_level = u8::try_from(self.heading_level)
+            .map_err(|_| Error::Corrupt("invalid hierarchy heading level".into()))?;
+        if !(1..=6).contains(&heading_level) {
+            return Err(Error::Corrupt("invalid hierarchy heading level".into()));
+        }
+        Ok(HierarchyCandidate {
+            child_fingerprint: self.child_fingerprint.parse()?,
+            heading: self.heading,
+            heading_level,
+            source: stored_source(
+                self.artifact_id,
+                self.start_offset,
+                self.end_offset,
+                self.exact_text_sha256,
+            )?,
+        })
+    }
+}
+
+#[derive(FromRow)]
+struct GlossaryRow {
+    fingerprint: String,
+    canonical: String,
+    definition: String,
+    aliases_json: String,
+    artifact_id: String,
+    start_offset: i64,
+    end_offset: i64,
+    exact_text_sha256: String,
+}
+
+impl GlossaryRow {
+    fn into_candidate(self) -> Result<GlossaryCandidate> {
+        let aliases: Vec<String> = serde_json::from_str(&self.aliases_json)
+            .map_err(|e| Error::Corrupt(format!("invalid glossary aliases: {e}")))?;
+        Ok(GlossaryCandidate {
+            canonical: self.canonical,
+            definition: self.definition,
+            aliases,
+            source: stored_source(
+                self.artifact_id,
+                self.start_offset,
+                self.end_offset,
+                self.exact_text_sha256,
+            )?,
+            fingerprint: self.fingerprint.parse()?,
+        })
+    }
+}
+
+#[derive(FromRow)]
+struct ConflictRow {
+    left_fingerprint: String,
+    right_fingerprint: String,
+    shared_subject: String,
+    status: String,
+}
+
+impl ConflictRow {
+    fn into_candidate(self) -> Result<ConflictCandidate> {
+        if self.status != "candidate" {
+            return Err(Error::Corrupt(format!(
+                "unknown contract conflict candidate status `{}`",
+                self.status
+            )));
+        }
+        Ok(ConflictCandidate {
+            left_fingerprint: self.left_fingerprint.parse()?,
+            right_fingerprint: self.right_fingerprint.parse()?,
+            shared_subject: self.shared_subject,
+        })
+    }
+}
+
+fn stored_source(
+    artifact_id: String,
+    start_offset: i64,
+    end_offset: i64,
+    exact_text_sha256: String,
+) -> Result<SourceRef> {
+    let start_offset = usize::try_from(start_offset)
+        .map_err(|_| Error::Corrupt("negative candidate source start offset".into()))?;
+    let end_offset = usize::try_from(end_offset)
+        .map_err(|_| Error::Corrupt("negative candidate source end offset".into()))?;
+    if start_offset >= end_offset {
+        return Err(Error::Corrupt("invalid candidate source span".into()));
+    }
+    Ok(SourceRef {
+        artifact_id: artifact_id.parse()?,
+        start_offset,
+        end_offset,
+        exact_text_sha256: exact_text_sha256.parse()?,
+    })
 }
 
 impl ArtifactRow {
@@ -1421,6 +1776,168 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(count, 0, "the partial contract transaction rolled back");
+    }
+
+    #[tokio::test]
+    async fn analysis_candidates_persist_reload_and_replay_idempotently() {
+        use bar_contract::{analyze_corpus, ArtifactText};
+
+        let repo = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(repo.path()).unwrap();
+        let first_text = "# Cache policy\n\n`Cache` means an in-memory layer.\n\nThe cache MUST retain entries.\n";
+        let second_text = "# Storage policy\n\n`Cache` means the durable record.\n\nThe cache MUST NOT retain entries.\n";
+        write_file(&root, "README.md", first_text.as_bytes());
+        write_file(&root, "docs/storage.md", second_text.as_bytes());
+
+        let (store, _dir) = temp_store().await;
+        let target_id = store
+            .register_target(&tree_target(&root), T0)
+            .await
+            .unwrap()
+            .target_id;
+        let revision_id = store
+            .record_revision(&target_id, &revision("c", None), T0)
+            .await
+            .unwrap()
+            .revision_id;
+        let inventory = bar_discovery::scan(
+            &root,
+            &bar_discovery::ScanConfig::default(),
+            &PriorInventory::new(),
+        )
+        .unwrap();
+        store
+            .persist_inventory(&target_id, &revision_id, &inventory, T0)
+            .await
+            .unwrap();
+
+        let artifact_text = |path: &str, text: &str| {
+            let artifact = inventory
+                .artifacts
+                .iter()
+                .find(|artifact| artifact.logical_path == path)
+                .unwrap();
+            ArtifactText::new(
+                artifact.artifact_id(&revision_id),
+                path,
+                artifact.content_sha256.parse().unwrap(),
+                text,
+            )
+            .unwrap()
+        };
+        let analysis = analyze_corpus(&[
+            artifact_text("README.md", first_text),
+            artifact_text("docs/storage.md", second_text),
+        ])
+        .unwrap();
+        assert_eq!(analysis.hierarchy.len(), 2);
+        assert_eq!(analysis.glossary.len(), 2);
+        assert_eq!(analysis.conflicts.len(), 1);
+
+        store
+            .persist_contracts(&target_id, &revision_id, &analysis.claims, T0 + 1)
+            .await
+            .unwrap();
+        let first = store
+            .persist_analysis_candidates(&target_id, &revision_id, &analysis, T0 + 2)
+            .await
+            .unwrap();
+        let replay = store
+            .persist_analysis_candidates(&target_id, &revision_id, &analysis, T0 + 3)
+            .await
+            .unwrap();
+        assert_eq!(
+            first,
+            CandidatePersistence {
+                hierarchy_inserted: 2,
+                glossary_inserted: 2,
+                conflicts_inserted: 1,
+            }
+        );
+        assert_eq!(replay, CandidatePersistence::default());
+
+        let loaded = store.load_analysis_candidates(&revision_id).await.unwrap();
+        assert_eq!(loaded.hierarchy, analysis.hierarchy);
+        assert_eq!(loaded.glossary, analysis.glossary);
+        assert_eq!(loaded.glossary_ambiguities, analysis.glossary_ambiguities);
+        assert_eq!(loaded.conflicts.len(), 1);
+        assert_eq!(
+            loaded.conflicts[0].shared_subject,
+            "the cache retain entries"
+        );
+        let chain = store.load_audit_chain().await.unwrap();
+        chain.verify().unwrap();
+        assert_eq!(
+            chain.len(),
+            7,
+            "register + revision + scan pair + two contracts + one conflict"
+        );
+
+        sqlx::query("UPDATE contract_conflict_candidates SET status = 'unknown'")
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        assert!(store.load_analysis_candidates(&revision_id).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn analysis_candidate_persistence_validates_before_writing() {
+        use bar_contract::{analyze_corpus, ArtifactText};
+
+        let repo = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(repo.path()).unwrap();
+        let text = "# Policy\n\n`Daemon` means the monitored process.\n\nThe daemon MUST stop.\n";
+        write_file(&root, "README.md", text.as_bytes());
+        let (store, _dir) = temp_store().await;
+        let target_id = store
+            .register_target(&tree_target(&root), T0)
+            .await
+            .unwrap()
+            .target_id;
+        let revision_id = store
+            .record_revision(&target_id, &revision("c", None), T0)
+            .await
+            .unwrap()
+            .revision_id;
+        let inventory = bar_discovery::scan(
+            &root,
+            &bar_discovery::ScanConfig::default(),
+            &PriorInventory::new(),
+        )
+        .unwrap();
+        store
+            .persist_inventory(&target_id, &revision_id, &inventory, T0)
+            .await
+            .unwrap();
+        let artifact = &inventory.artifacts[0];
+        let source = ArtifactText::new(
+            artifact.artifact_id(&revision_id),
+            &artifact.logical_path,
+            artifact.content_sha256.parse().unwrap(),
+            text,
+        )
+        .unwrap();
+        let mut analysis = analyze_corpus(&[source]).unwrap();
+        store
+            .persist_contracts(&target_id, &revision_id, &analysis.claims, T0 + 1)
+            .await
+            .unwrap();
+        analysis.hierarchy[0].child_fingerprint = Sha256Digest::from_bytes([9; 32]);
+
+        assert!(store
+            .persist_analysis_candidates(&target_id, &revision_id, &analysis, T0 + 2)
+            .await
+            .is_err());
+        let hierarchy: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM contract_hierarchy_candidates")
+                .fetch_one(&store.pool)
+                .await
+                .unwrap();
+        let glossary: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM glossary_candidates")
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+        assert_eq!((hierarchy, glossary), (0, 0));
     }
 
     fn git_available() -> bool {

@@ -81,6 +81,7 @@ pub struct GlossaryCandidate {
     pub definition: String,
     pub aliases: Vec<String>,
     pub source: SourceRef,
+    pub fingerprint: Sha256Digest,
 }
 
 /// Two directly opposing claims retained for later adjudication.
@@ -98,6 +99,89 @@ pub struct DocumentAnalysis {
     pub hierarchy: Vec<HierarchyCandidate>,
     pub glossary: Vec<GlossaryCandidate>,
     pub conflicts: Vec<ConflictCandidate>,
+}
+
+/// Competing definitions for the same normalized glossary term.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GlossaryAmbiguityCandidate {
+    pub normalized_term: String,
+    pub sources: Vec<SourceRef>,
+}
+
+/// Deterministically merged candidate analysis across a target revision.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CorpusAnalysis {
+    pub claims: Vec<ExtractedClaim>,
+    pub hierarchy: Vec<HierarchyCandidate>,
+    pub glossary: Vec<GlossaryCandidate>,
+    pub glossary_ambiguities: Vec<GlossaryAmbiguityCandidate>,
+    pub conflicts: Vec<ConflictCandidate>,
+}
+
+/// Analyzes multiple artifacts without merging ambiguous vocabulary or
+/// adjudicating conflicting claims.
+pub fn analyze_corpus(artifacts: &[ArtifactText]) -> Result<CorpusAnalysis> {
+    let mut claims = Vec::new();
+    let mut hierarchy = Vec::new();
+    let mut glossary = Vec::new();
+    for artifact in artifacts {
+        let analysis = analyze_document(artifact)?;
+        claims.extend(analysis.claims);
+        hierarchy.extend(analysis.hierarchy);
+        glossary.extend(analysis.glossary);
+    }
+
+    claims.sort_by_key(|claim| claim.fingerprint);
+    claims.dedup_by_key(|claim| claim.fingerprint);
+    hierarchy.sort_by_key(|candidate| {
+        (
+            candidate.child_fingerprint,
+            candidate.source.artifact_id,
+            candidate.source.start_offset,
+        )
+    });
+    hierarchy.dedup_by(|left, right| left == right);
+    glossary.sort_by_key(|candidate| candidate.fingerprint);
+    glossary.dedup_by_key(|candidate| candidate.fingerprint);
+
+    let glossary_ambiguities = glossary_ambiguities(&glossary);
+    let conflicts = conflict_candidates(&claims);
+
+    Ok(CorpusAnalysis {
+        claims,
+        hierarchy,
+        glossary,
+        glossary_ambiguities,
+        conflicts,
+    })
+}
+
+/// Derives competing-definition candidates without merging or selecting a
+/// preferred glossary definition.
+pub fn glossary_ambiguities(glossary: &[GlossaryCandidate]) -> Vec<GlossaryAmbiguityCandidate> {
+    let mut terms = std::collections::BTreeMap::<String, Vec<&GlossaryCandidate>>::new();
+    for candidate in glossary {
+        terms
+            .entry(candidate.canonical.to_lowercase())
+            .or_default()
+            .push(candidate);
+    }
+    terms
+        .into_iter()
+        .filter_map(|(normalized_term, candidates)| {
+            let definitions: std::collections::BTreeSet<_> = candidates
+                .iter()
+                .map(|candidate| candidate.definition.to_lowercase())
+                .collect();
+            (definitions.len() > 1).then(|| GlossaryAmbiguityCandidate {
+                normalized_term,
+                sources: candidates
+                    .into_iter()
+                    .map(|candidate| candidate.source.clone())
+                    .collect(),
+            })
+        })
+        .collect()
 }
 
 /// Segments and analyzes headings, paragraphs, list items, table cells, and
@@ -120,6 +204,12 @@ pub fn analyze_document(artifact: &ArtifactText) -> Result<DocumentAnalysis> {
                 definition,
                 aliases,
                 source: source_ref(artifact, segment.start, segment.end),
+                fingerprint: glossary_fingerprint(
+                    artifact,
+                    &normalized,
+                    segment.start,
+                    segment.end,
+                ),
             });
         }
         if let Some(normative_kind) = classify(&normalized) {
@@ -694,6 +784,23 @@ fn source_ref(artifact: &ArtifactText, start_offset: usize, end_offset: usize) -
     }
 }
 
+fn glossary_fingerprint(
+    artifact: &ArtifactText,
+    normalized_statement: &str,
+    start_offset: usize,
+    end_offset: usize,
+) -> Sha256Digest {
+    let mut fingerprint = Sha256::new();
+    update_field(&mut fingerprint, normalized_statement.as_bytes());
+    update_field(
+        &mut fingerprint,
+        artifact.artifact_id.to_string().as_bytes(),
+    );
+    update_field(&mut fingerprint, &(start_offset as u64).to_be_bytes());
+    update_field(&mut fingerprint, &(end_offset as u64).to_be_bytes());
+    Sha256Digest::from_bytes(fingerprint.finalize().into())
+}
+
 fn update_field(hasher: &mut Sha256, value: &[u8]) {
     hasher.update((value.len() as u64).to_be_bytes());
     hasher.update(value);
@@ -837,5 +944,32 @@ mod tests {
             analysis.claims[0].statement,
             "The daemon MUST remain model-optional."
         );
+    }
+
+    #[test]
+    fn corpus_preserves_competing_glossary_definitions_and_cross_artifact_conflict() {
+        let first = artifact(
+            "`Cache` means an in-memory acceleration layer.\n\nThe cache MUST retain entries.\n",
+        );
+        let second_text =
+            "`Cache` means the durable system of record.\n\nThe cache MUST NOT retain entries.\n";
+        let second_hash = digest(second_text.as_bytes());
+        let second = ArtifactText::new(
+            ArtifactId::from_digest(Sha256Digest::from_bytes([7; 32])),
+            "docs/storage.md",
+            second_hash,
+            second_text,
+        )
+        .unwrap();
+
+        let corpus = analyze_corpus(&[first, second]).unwrap();
+
+        assert_eq!(corpus.claims.len(), 2);
+        assert_eq!(corpus.conflicts.len(), 1);
+        assert_eq!(corpus.glossary.len(), 2, "definitions are not merged");
+        assert_eq!(corpus.glossary_ambiguities.len(), 1);
+        assert_eq!(corpus.glossary_ambiguities[0].normalized_term, "cache");
+        assert_eq!(corpus.glossary_ambiguities[0].sources.len(), 2);
+        assert_ne!(corpus.glossary[0].definition, corpus.glossary[1].definition);
     }
 }
