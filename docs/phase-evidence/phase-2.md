@@ -7,9 +7,9 @@ discovery** (spec §21).
 | Field | Value |
 |---|---|
 | **phase** | 2 — Artifact discovery |
-| **source_revision** | `3e8671a` (discovery engine) → `73d7ea8` (persistence) |
+| **source_revision** | `3e8671a` (discovery) → `73d7ea8` (inventory persistence) → `50600c1` (dependency-aware reparse planning) |
 | **reviewed_by_human** | pending |
-| **signed_by_agent** | build session, 2026-07-13 |
+| **signed_by_agent** | build sessions, 2026-07-13 through 2026-07-15 |
 
 ## changed_files
 
@@ -20,18 +20,20 @@ discovery** (spec §21).
 - `crates/bar-core/src/lib.rs`
 - `crates/bar-discovery/Cargo.toml`
 - `crates/bar-discovery/src/classify.rs`
+- `crates/bar-discovery/src/dependency.rs`
 - `crates/bar-discovery/src/lib.rs`
 - `crates/bar-discovery/src/walk.rs`
 - `crates/bar-store/Cargo.toml`
 - `crates/bar-store/src/lib.rs`
 - `docs/phase-evidence/phase-2.md`
 - `migrations/0003_artifacts.sql`
+- `migrations/0004_artifact_dependencies.sql`
 
 ## Exit criteria (spec §21)
 
 | Criterion | Status | Evidence |
 |---|---|---|
-| One-file change reparses only dependents | ⚠️ Partial | `one_file_change_rehashes_only_that_file` (unit) and `incremental_rescan_through_store_rehashes_only_the_changed_file` (end-to-end via the DB) prove that only one changed file is rehashed. No parser or dependency graph exists yet, so selective dependent reparsing is not implemented. |
+| One-file change reparses only dependents | ✅ | `one_change_selects_only_transitive_dependents` proves deterministic reverse-closure selection. `persisted_dependencies_select_only_changed_artifact_and_dependents` proves the full Phase 2 seam: one changed file is rehashed, its invalidation path seeds the persisted graph, only it and its transitive dependents enter the reparse plan, and an unrelated file is excluded. Parser-specific execution lands with the parser phases. |
 | No full rescan | ✅ | Cross-revision carry-forward: files whose size and mtime are unchanged reuse the prior revision's stored hash and classification without being read. |
 
 ## Required implementation (spec §21 Phase 2)
@@ -47,17 +49,18 @@ cache and incremental scan — all delivered.
   repositories skipped as separate targets, symlink escape/loop protection.
 - Appendix C `[scan]` — scan policy honored (`max_file_bytes`,
   `follow_symlinks`, `include_hidden`).
-- Appendix E — `artifacts` table and idempotent persistence.
+- Appendix E — `artifacts` and `artifact_dependencies` tables with idempotent,
+  transactional persistence.
 - Appendix F — `target.scan.started` / `target.scan.completed` audit events.
 - §22 — new persisted state carries idempotency, unknown-value, and
   migration-replay tests.
 
 ## requirement_ids_deferred
 
-- **`artifact_dependencies` (Appendix E), the dependency graph, and selective
-  dependent reparsing (§21 Phase 2 exit criterion)** — not implemented. This is
-  a Phase 2 closure gap: the current implementation can avoid rehashing unchanged
-  files, but cannot identify or reparse dependents of a changed artifact.
+- **Language-specific dependency extraction (§8, §9)** — deferred to contract
+  extraction and static adapters. Phase 2 validates, persists, reloads, and
+  consumes supplied edges; it does not infer Rust/Python imports or schema
+  references itself.
 - **Per-artifact delta audit events** (`artifact.discovered/changed/removed`) —
   deferred to the evidence-invalidation phase that consumes them; Phase 2 emits
   scan-level events to avoid thousands of records on an initial bulk scan.
@@ -68,8 +71,8 @@ cache and incremental scan — all delivered.
 
 ## tests_added / tests_run / test_results
 
-- `cargo test` — **72 passed, 0 failed** (was 58): bar-discovery +12,
-  bar-store +2.
+- `cargo test --all` — **78 passed, 0 failed** (was 58): bar-discovery +16,
+  bar-store +4.
 - `cargo clippy --all-targets -- -D warnings` — clean.
 - `cargo fmt --check` — clean.
 
@@ -77,7 +80,9 @@ Coverage of note: exit-criterion selectivity (unit and end-to-end via the DB),
 `ScanMode::Full` re-hash, added/removed detection, oversized-not-read,
 `.git`/hidden skipping with a significant-dotfile allowlist, symlink-loop
 termination, nested-repo skipping, classification precedence (generated wins),
-unknown-token rejection for `ArtifactKind`, idempotent persistence.
+unknown-token rejection for `ArtifactKind`, dependency cycles and duplicate
+edges, unsafe edge input rejection, dependency transaction rollback, idempotent
+inventory and edge persistence.
 
 ## fixture_results
 
@@ -90,7 +95,8 @@ changed-file invalidation).
 
 The incremental scan reads only added/changed files: `ScanSummary::hashed`
 measures the work and is asserted to be 1 after a one-file change over a 5-file
-tree. The Phase-0 boot budget regression test still holds.
+tree. Reparse planning walks only the reachable reverse dependency closure. The
+Phase-0 boot budget regression test still holds.
 
 ## security_checks
 
@@ -100,18 +106,24 @@ tree. The Phase-0 boot budget regression test still holds.
 - **Bounded reads**: files over `max_file_bytes` are inventoried with a non-hex
   `unhashed:oversized` sentinel, never read — a huge or hostile binary cannot
   force an unbounded read.
+- **Dependency input validation**: paths reject absolute/traversal forms;
+  relation tokens are length- and character-bounded; missing endpoints roll the
+  entire edge transaction back.
 - `unsafe_code = "forbid"` still holds workspace-wide.
 
 ## migrations
 
 - `migrations/0003_artifacts.sql` — `artifacts`. Replay covered by the existing
   `migrations_apply_and_replay` test.
+- `migrations/0004_artifact_dependencies.sql` — revision-scoped dependency
+  edges with foreign keys, bounded relation kind, and reverse-lookup index.
 
 ## known_limitations
 
-- **Dependency-aware reparsing is absent (§21 Phase 2 exit criterion).** The
-  scanner reports changed artifacts but has no parser outputs or dependency
-  edges, so downstream dependents cannot yet be selected for reprocessing.
+- **Edge extraction is caller-supplied (§8, §9).** The graph mechanics are
+  complete, but no language parser produces edges yet; until Phase 3/5, the
+  capability is exercised through deterministic fixtures rather than a live
+  adapter.
 
 - **The mtime heuristic has a blind spot.** Incremental mode decides "unchanged"
   from `(size, mtime)`; a content edit that preserves both is a silent miss.
@@ -129,5 +141,5 @@ tree. The Phase-0 boot budget regression test still holds.
 ## next_phase_dependencies
 
 - Phase 3 (contract extraction) reads discovered artifacts, their kinds, and
-  source spans; the `artifacts` inventory and `source_of_truth` flag are its
-  inputs.
+  source spans; the artifact inventory and invalidation plan are its inputs, and
+  extracted references can populate the dependency graph.

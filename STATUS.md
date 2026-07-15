@@ -2,7 +2,7 @@
 
 Living status of the Behavioral Assurance Runtime build. Newest first.
 
-## Current phase: 2 — Artifact discovery
+## Current phase: 2 — Artifact discovery (implementation complete)
 
 Per [`docs/spec.md`](docs/spec.md) §21, Phase 2 delivers an inventory of
 docs/code/tests/schemas/config/CI/diagrams/generated files, a hash cache, and an
@@ -29,18 +29,30 @@ incremental scan.
   scan idempotently (content-derived `ArtifactId`) bracketed by
   `target.scan.started`/`completed` audit events; `load_inventory` reloads a
   revision's inventory to drive the next scan's carry-forward.
+- `bar-discovery` + `bar-store`: validated dependency edges (`dependent` →
+  `dependency`), migration `0004` (`artifact_dependencies`), idempotent and
+  transactional persistence, and deterministic transitive reparse plans. Scan
+  results expose sorted added/changed/removed invalidation paths. Cycles and
+  duplicate edges terminate without duplicate work; unrelated artifacts stay
+  out of the plan.
+- Oversized artifacts now invalidate on metadata changes instead of appearing
+  unchanged merely because both revisions carry the `unhashed:oversized`
+  sentinel.
 
-The no-full-rescan exit criterion is met and tested. The implementation rehashes
-only a changed file, but dependency-aware parsing does not exist yet, so the
-"reparses only dependents" criterion is **partial** rather than complete. All 72
-tests pass; clippy `-D warnings` and fmt are clean. Phase evidence per spec
-Appendix AP: [`docs/phase-evidence/phase-2.md`](docs/phase-evidence/phase-2.md)
-— **implementation incomplete; human review pending**.
+Both Phase 2 exit criteria are met at the discovery boundary: a one-file change
+rehashes only that file and produces a reparse plan containing only the changed
+artifact and its transitive dependents; unchanged, unrelated files are neither
+read nor selected. All 78 tests pass; clippy `-D warnings` and fmt are clean.
+Phase evidence per spec Appendix AP:
+[`docs/phase-evidence/phase-2.md`](docs/phase-evidence/phase-2.md) — **pending
+human review**.
 
-`artifact_dependencies` and dependency-aware reparsing must land before Phase 2
-closes. Per-artifact delta audit events remain deferred to evidence invalidation.
-The daemon scan loop that picks the "prior" revision is later work; Phase 2 lands
-scan + persistence as library capabilities (shadow-first).
+Language-specific parsers populate dependency edges in the contract/static
+adapter phases; Phase 2 accepts validated edges and owns their persistence and
+invalidation planning. Per-artifact delta audit events remain deferred to
+evidence invalidation. The daemon scan loop that picks the "prior" revision is
+later work; Phase 2 lands scan + persistence as library capabilities
+(shadow-first).
 
 ## Phase 1 — Target registration and identity
 
