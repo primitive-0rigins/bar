@@ -357,7 +357,8 @@ analysis_versions
 ContractRuling {  
 ruling_id  
 contract_refs\[\]  
-chosen_interpretation  
+disposition<br>
+outcome<br>
 rejected_interpretations\[\]  
 rationale  
 scope  
@@ -369,6 +370,11 @@ superseded_by?
 }
 
 - Dashboard presents competing interpretations and evidence.
+
+- `disposition` is one of `chosen`, `deferred`, `rejected`, or
+  `request_more_evidence`. A chosen ruling's `outcome` is the selected
+  interpretation and may list rejected alternatives. The non-final outcomes
+  record their reason in `outcome` and cannot claim rejected alternatives.
 
 - Operator may choose, edit, reject, defer, or request more evidence.
 

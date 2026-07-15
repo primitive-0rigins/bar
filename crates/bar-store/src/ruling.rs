@@ -1,7 +1,7 @@
 //! Durable, evidence-bound operator contract rulings (spec §7.4).
 
 use bar_audit::{AuditCategory, AuditEvent};
-use bar_contract::ruling::{validate_ruling, ContractRuling};
+use bar_contract::ruling::{validate_ruling, ContractRuling, RulingDisposition};
 use bar_core::{Error, EvidenceId, Result, RulingId, TargetId};
 use sqlx::{FromRow, Sqlite, Transaction};
 
@@ -32,7 +32,8 @@ struct ContractRulingRow {
     target_id: String,
     context_evidence_id: String,
     contract_refs_json: String,
-    chosen_interpretation: String,
+    disposition: String,
+    outcome: String,
     rejected_interpretations_json: String,
     rationale: String,
     scope_json: String,
@@ -61,7 +62,8 @@ impl ContractRulingRow {
             .map_err(|e| Error::Corrupt(format!("invalid persisted ruling scope: {e}")))?;
         let ruling = ContractRuling {
             contract_refs,
-            chosen_interpretation: self.chosen_interpretation,
+            disposition: RulingDisposition::from_token(&self.disposition)?,
+            outcome: self.outcome,
             rejected_interpretations,
             rationale: self.rationale,
             scope,
@@ -86,7 +88,8 @@ impl ContractRulingRow {
         self.target_id == expected.target_id
             && self.context_evidence_id == expected.context_evidence_id
             && self.contract_refs_json == expected.contract_refs_json
-            && self.chosen_interpretation == expected.chosen_interpretation
+            && self.disposition == expected.disposition
+            && self.outcome == expected.outcome
             && self.rejected_interpretations_json == expected.rejected_interpretations_json
             && self.rationale == expected.rationale
             && self.scope_json == expected.scope_json
@@ -129,7 +132,8 @@ impl Store {
             target_id: target_key.clone(),
             context_evidence_id: context_evidence_id.to_string(),
             contract_refs_json: contract_refs_json.clone(),
-            chosen_interpretation: ruling.chosen_interpretation.clone(),
+            disposition: ruling.disposition.as_str().into(),
+            outcome: ruling.outcome.clone(),
             rejected_interpretations_json: rejected_json.clone(),
             rationale: ruling.rationale.clone(),
             scope_json: scope_json.clone(),
@@ -226,16 +230,17 @@ impl Store {
         let ruling_id = RulingId::generate();
         sqlx::query(
             "INSERT INTO contract_rulings \
-             (ruling_id, target_id, context_evidence_id, contract_refs_json, \
+             (ruling_id, target_id, context_evidence_id, contract_refs_json, disposition, \
               chosen_interpretation, rejected_interpretations_json, rationale, scope_json, \
               effective_from_ms, expires_at_ms, operator_id, created_at_ms) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(ruling_id.to_string())
         .bind(&target_key)
         .bind(context_evidence_id.to_string())
         .bind(&contract_refs_json)
-        .bind(&ruling.chosen_interpretation)
+        .bind(ruling.disposition.as_str())
+        .bind(&ruling.outcome)
         .bind(&rejected_json)
         .bind(&ruling.rationale)
         .bind(&scope_json)
@@ -301,7 +306,8 @@ impl Store {
     /// derives supersession state without mutating historical records.
     pub async fn load_contract_ruling(&self, ruling_id: &RulingId) -> Result<StoredContractRuling> {
         let row: ContractRulingRow = sqlx::query_as(
-            "SELECT target_id, context_evidence_id, contract_refs_json, chosen_interpretation, \
+            "SELECT target_id, context_evidence_id, contract_refs_json, disposition, \
+                    chosen_interpretation AS outcome, \
                     rejected_interpretations_json, rationale, scope_json, effective_from_ms, \
                     expires_at_ms, operator_id, created_at_ms \
              FROM contract_rulings WHERE ruling_id = ?",
@@ -379,7 +385,8 @@ async fn load_contract_ruling_row(
     operation: &'static str,
 ) -> Result<ContractRulingRow> {
     sqlx::query_as(
-        "SELECT target_id, context_evidence_id, contract_refs_json, chosen_interpretation, \
+        "SELECT target_id, context_evidence_id, contract_refs_json, disposition, \
+                chosen_interpretation AS outcome, \
                 rejected_interpretations_json, rationale, scope_json, effective_from_ms, \
                 expires_at_ms, operator_id, created_at_ms \
          FROM contract_rulings WHERE ruling_id = ?",

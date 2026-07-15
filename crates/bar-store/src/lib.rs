@@ -2791,7 +2791,7 @@ mod tests {
 
     #[tokio::test]
     async fn contract_rulings_reuse_supersede_expire_and_reload() {
-        use bar_contract::ruling::ContractRuling;
+        use bar_contract::ruling::{ContractRuling, RulingDisposition};
         use bar_contract::{extract_deterministic, ArtifactText};
 
         let repo = tempfile::tempdir().unwrap();
@@ -2856,7 +2856,8 @@ mod tests {
             .unwrap();
         let ruling = ContractRuling {
             contract_refs: contracts.clone(),
-            chosen_interpretation: "retain entries".into(),
+            disposition: RulingDisposition::Chosen,
+            outcome: "retain entries".into(),
             rejected_interpretations: vec!["discard entries".into()],
             rationale: "The production retention requirement controls.".into(),
             scope: ContractScope {
@@ -2900,9 +2901,10 @@ mod tests {
         assert!(!reused.inserted);
 
         let mut replacement = ruling.clone();
-        replacement.chosen_interpretation = "discard entries".into();
-        replacement.rejected_interpretations = vec!["retain entries".into()];
-        replacement.rationale = "Reviewed deployment evidence changes the interpretation.".into();
+        replacement.disposition = RulingDisposition::Deferred;
+        replacement.outcome = "deferred pending a production evidence capture".into();
+        replacement.rejected_interpretations.clear();
+        replacement.rationale = "The current evidence cannot select an interpretation.".into();
         replacement.effective_from_ms = T0 + 5;
         let second = store
             .persist_contract_ruling(

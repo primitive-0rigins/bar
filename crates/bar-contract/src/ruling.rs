@@ -11,11 +11,49 @@ const MAX_RATIONALE_BYTES: usize = 8_192;
 const MAX_OPERATOR_ID_BYTES: usize = 255;
 const MAX_REJECTED_INTERPRETATIONS: usize = 32;
 
+/// Operator outcome for an ambiguity. Tokens are durable database values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RulingDisposition {
+    Chosen,
+    Deferred,
+    Rejected,
+    RequestMoreEvidence,
+}
+
+impl RulingDisposition {
+    pub const VARIANTS: &'static [Self] = &[
+        Self::Chosen,
+        Self::Deferred,
+        Self::Rejected,
+        Self::RequestMoreEvidence,
+    ];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Chosen => "chosen",
+            Self::Deferred => "deferred",
+            Self::Rejected => "rejected",
+            Self::RequestMoreEvidence => "request_more_evidence",
+        }
+    }
+
+    /// Parses a persisted disposition token and rejects unknown values.
+    pub fn from_token(token: &str) -> Result<Self> {
+        Self::VARIANTS
+            .iter()
+            .copied()
+            .find(|disposition| disposition.as_str() == token)
+            .ok_or_else(|| Error::Corrupt(format!("unknown ruling disposition `{token}`")))
+    }
+}
+
 /// The immutable content of an operator decision about competing contracts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContractRuling {
     pub contract_refs: Vec<ContractId>,
-    pub chosen_interpretation: String,
+    pub disposition: RulingDisposition,
+    /// Selected interpretation for `Chosen`; a clear outcome for other states.
+    pub outcome: String,
     pub rejected_interpretations: Vec<String>,
     pub rationale: String,
     pub scope: ContractScope,
@@ -37,11 +75,7 @@ pub fn validate_ruling(ruling: &ContractRuling) -> Result<()> {
             "a contract ruling contains duplicate contract references".into(),
         ));
     }
-    validate_text(
-        &ruling.chosen_interpretation,
-        MAX_INTERPRETATION_BYTES,
-        "chosen interpretation",
-    )?;
+    validate_text(&ruling.outcome, MAX_INTERPRETATION_BYTES, "outcome")?;
     if ruling.rejected_interpretations.len() > MAX_REJECTED_INTERPRETATIONS {
         return Err(Error::Corrupt(
             "a contract ruling contains too many rejected interpretations".into(),
@@ -54,11 +88,18 @@ pub fn validate_ruling(ruling: &ContractRuling) -> Result<()> {
             MAX_INTERPRETATION_BYTES,
             "rejected interpretation",
         )?;
-        if rejected == &ruling.chosen_interpretation || !unique_rejected.insert(rejected) {
+        if rejected == &ruling.outcome || !unique_rejected.insert(rejected) {
             return Err(Error::Corrupt(
                 "a contract ruling contains duplicate interpretations".into(),
             ));
         }
+    }
+    if ruling.disposition != RulingDisposition::Chosen
+        && !ruling.rejected_interpretations.is_empty()
+    {
+        return Err(Error::Corrupt(
+            "a non-chosen ruling cannot reject interpretations".into(),
+        ));
     }
     validate_text(&ruling.rationale, MAX_RATIONALE_BYTES, "rationale")?;
     validate_text(&ruling.operator_id, MAX_OPERATOR_ID_BYTES, "operator id")?;
@@ -90,7 +131,8 @@ mod tests {
     fn ruling() -> ContractRuling {
         ContractRuling {
             contract_refs: vec![ContractId::generate(), ContractId::generate()],
-            chosen_interpretation: "retain entries".into(),
+            disposition: RulingDisposition::Chosen,
+            outcome: "retain entries".into(),
             rejected_interpretations: vec!["discard entries".into()],
             rationale: "The scoped production requirement controls.".into(),
             scope: ContractScope::default(),
@@ -103,13 +145,18 @@ mod tests {
     #[test]
     fn ruling_validation_rejects_ambiguous_or_unbounded_inputs() {
         validate_ruling(&ruling()).unwrap();
+        assert_eq!(
+            RulingDisposition::RequestMoreEvidence.as_str(),
+            "request_more_evidence"
+        );
+        assert!(RulingDisposition::from_token("unknown").is_err());
 
         let mut invalid = ruling();
         invalid.contract_refs.truncate(1);
         assert!(validate_ruling(&invalid).is_err());
 
         let mut invalid = ruling();
-        invalid.rejected_interpretations = vec![invalid.chosen_interpretation.clone()];
+        invalid.rejected_interpretations = vec![invalid.outcome.clone()];
         assert!(validate_ruling(&invalid).is_err());
 
         let mut invalid = ruling();
@@ -119,5 +166,20 @@ mod tests {
         let mut invalid = ruling();
         invalid.rationale = " ".into();
         assert!(validate_ruling(&invalid).is_err());
+
+        for disposition in [
+            RulingDisposition::Deferred,
+            RulingDisposition::Rejected,
+            RulingDisposition::RequestMoreEvidence,
+        ] {
+            let mut non_final = ruling();
+            non_final.disposition = disposition;
+            non_final.rejected_interpretations.clear();
+            validate_ruling(&non_final).unwrap();
+            non_final
+                .rejected_interpretations
+                .push("discard entries".into());
+            assert!(validate_ruling(&non_final).is_err());
+        }
     }
 }
