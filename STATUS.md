@@ -80,7 +80,7 @@ versioned operator rulings when overlap remains ambiguous.
   versions resolve as ambiguous rather than selecting a contract.
 
 All 113 repository tests pass; clippy `-D warnings` and fmt are clean.
-Implementation revisions: `5a9b3ef`, `f9e71af`, `414be5c`, `15adcfd`, `ed0f016`, `2054c8d`, `a93a672`, `5483b93`, `3e63c89`, `ee9b01d`, `1862d2e`, `1c21194`, `d3d4c2a`, `3ec5aa9`, `37b3642`.
+Implementation revisions: `5a9b3ef`, `f9e71af`, `414be5c`, `15adcfd`, `ed0f016`, `2054c8d`, `a93a672`, `5483b93`, `3e63c89`, `ee9b01d`, `1862d2e`, `1c21194`, `d3d4c2a`, `3ec5aa9`, `37b3642`, `3696360`.
 
 ### Remaining before Phase 4 completion
 
@@ -202,10 +202,11 @@ conflict candidates, and treats optional-model output as untrusted data.
   vocabulary/state is rejected during reload.
 - `bar-store`: migration `0006` adds durable structural hierarchy, glossary,
   and provisional conflict candidates. Candidate persistence validates all
-  contract and artifact references before writing, is replay-idempotent, and
-  audits newly detected conflicts atomically. Reload rejects corrupt aliases,
-  spans, hashes, heading levels, and unknown conflict states; glossary
-  ambiguities are reconstructed from the preserved definitions.
+  contract and artifact references before writing, revalidates the full
+  candidate set on every replay, and audits newly detected conflicts
+  atomically. Reload rejects corrupt aliases, spans, hashes, heading levels,
+  and unknown conflict states; glossary ambiguities are reconstructed from the
+  preserved definitions.
 - The versioned `fixtures/phase-3-contract-corpus` golden corpus drives real
   discovery, deterministic analysis, contract/candidate persistence, and
   reload against hand-authored expected output. It covers fenced examples,
