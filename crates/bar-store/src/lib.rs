@@ -1087,9 +1087,16 @@ impl ConflictRow {
                 self.status
             )));
         }
+        let left_fingerprint = self.left_fingerprint.parse()?;
+        let right_fingerprint = self.right_fingerprint.parse()?;
+        let (left_fingerprint, right_fingerprint) = if left_fingerprint <= right_fingerprint {
+            (left_fingerprint, right_fingerprint)
+        } else {
+            (right_fingerprint, left_fingerprint)
+        };
         Ok(ConflictCandidate {
-            left_fingerprint: self.left_fingerprint.parse()?,
-            right_fingerprint: self.right_fingerprint.parse()?,
+            left_fingerprint,
+            right_fingerprint,
             shared_subject: self.shared_subject,
         })
     }
@@ -1878,6 +1885,121 @@ mod tests {
             .await
             .unwrap();
         assert!(store.load_analysis_candidates(&revision_id).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn phase_three_golden_corpus_round_trips_expected_candidates() {
+        use bar_contract::{analyze_corpus, ArtifactText};
+
+        let root = std::fs::canonicalize(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../fixtures/phase-3-contract-corpus"),
+        )
+        .unwrap();
+        let expected: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(root.join("expected.json")).unwrap()).unwrap();
+        let expected_strings = |field: &str| {
+            expected[field]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|value| value.as_str().unwrap().to_string())
+                .collect::<Vec<_>>()
+        };
+
+        let (store, _dir) = temp_store().await;
+        let target_id = store
+            .register_target(&tree_target(&root), T0)
+            .await
+            .unwrap()
+            .target_id;
+        let revision_id = store
+            .record_revision(&target_id, &revision("golden-corpus", None), T0)
+            .await
+            .unwrap()
+            .revision_id;
+        let inventory = bar_discovery::scan(
+            &root,
+            &bar_discovery::ScanConfig::default(),
+            &PriorInventory::new(),
+        )
+        .unwrap();
+        store
+            .persist_inventory(&target_id, &revision_id, &inventory, T0)
+            .await
+            .unwrap();
+
+        let sources = expected_strings("source_files")
+            .into_iter()
+            .map(|path| {
+                let artifact = inventory
+                    .artifacts
+                    .iter()
+                    .find(|artifact| artifact.logical_path == path)
+                    .unwrap();
+                ArtifactText::new(
+                    artifact.artifact_id(&revision_id),
+                    &path,
+                    artifact.content_sha256.parse().unwrap(),
+                    std::fs::read_to_string(root.join(&path)).unwrap(),
+                )
+                .unwrap()
+            })
+            .collect::<Vec<_>>();
+        let analysis = analyze_corpus(&sources).unwrap();
+        let mut statements = analysis
+            .claims
+            .iter()
+            .map(|claim| claim.statement.clone())
+            .collect::<Vec<_>>();
+        statements.sort();
+        let mut expected_statements = expected_strings("statements");
+        expected_statements.sort();
+
+        assert_eq!(statements, expected_statements);
+        assert_eq!(
+            analysis.hierarchy.len() as u64,
+            expected["hierarchy_count"].as_u64().unwrap()
+        );
+        assert_eq!(
+            analysis.glossary.len() as u64,
+            expected["glossary_count"].as_u64().unwrap()
+        );
+        assert_eq!(
+            analysis.glossary_ambiguities.len() as u64,
+            expected["glossary_ambiguity_count"].as_u64().unwrap()
+        );
+        assert_eq!(
+            analysis
+                .conflicts
+                .iter()
+                .map(|conflict| conflict.shared_subject.clone())
+                .collect::<Vec<_>>(),
+            expected_strings("conflict_subjects")
+        );
+
+        store
+            .persist_contracts(&target_id, &revision_id, &analysis.claims, T0 + 1)
+            .await
+            .unwrap();
+        store
+            .persist_analysis_candidates(&target_id, &revision_id, &analysis, T0 + 2)
+            .await
+            .unwrap();
+        let mut stored_statements = store
+            .load_contracts(&revision_id)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|contract| contract.claim.statement)
+            .collect::<Vec<_>>();
+        stored_statements.sort();
+        assert_eq!(stored_statements, expected_statements);
+        let stored = store.load_analysis_candidates(&revision_id).await.unwrap();
+        assert_eq!(stored.hierarchy.len(), analysis.hierarchy.len());
+        assert_eq!(stored.glossary, analysis.glossary);
+        assert_eq!(stored.glossary_ambiguities, analysis.glossary_ambiguities);
+        assert_eq!(stored.conflicts, analysis.conflicts);
     }
 
     #[tokio::test]

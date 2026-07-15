@@ -1,0 +1,18 @@
+{
+  "source_files": [
+    "operations.md",
+    "policy.md"
+  ],
+  "statements": [
+    "The cache MUST NOT retain entries.",
+    "The cache MUST retain entries.",
+    "The monitor MUST report failed checks.",
+    "Workers should stop within five seconds."
+  ],
+  "hierarchy_count": 4,
+  "glossary_count": 2,
+  "glossary_ambiguity_count": 1,
+  "conflict_subjects": [
+    "the cache retain entries"
+  ]
+}
