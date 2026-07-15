@@ -2671,6 +2671,30 @@ mod tests {
         assert!(attestation.inserted);
         assert_eq!(attestation_replay.evidence_id, attestation.evidence_id);
         assert!(!attestation_replay.inserted);
+        sqlx::query(
+            "UPDATE scope_context_attestations SET created_at_ms = -1 WHERE evidence_id = ?",
+        )
+        .bind(attestation.evidence_id.to_string())
+        .execute(&store.pool)
+        .await
+        .unwrap();
+        assert!(store
+            .persist_scope_context_attestation(
+                &observed_during_validity.evidence_id,
+                "operator/alice",
+                "verified against the deployment manifest",
+                T0 + 17,
+            )
+            .await
+            .is_err());
+        sqlx::query(
+            "UPDATE scope_context_attestations SET created_at_ms = ? WHERE evidence_id = ?",
+        )
+        .bind(i64::try_from(T0 + 16).unwrap())
+        .bind(attestation.evidence_id.to_string())
+        .execute(&store.pool)
+        .await
+        .unwrap();
         let loaded_attestation = store
             .load_scope_context_attestation(&attestation.evidence_id)
             .await
@@ -2929,6 +2953,27 @@ mod tests {
             .unwrap();
         assert_eq!(replacement_replay.ruling_id, second.ruling_id);
         assert!(!replacement_replay.inserted);
+        sqlx::query("UPDATE contract_rulings SET created_at_ms = -1 WHERE ruling_id = ?")
+            .bind(second.ruling_id.to_string())
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        assert!(store
+            .persist_contract_ruling(
+                &target_id,
+                &context.evidence_id,
+                &replacement,
+                Some(&first.ruling_id),
+                T0 + 6,
+            )
+            .await
+            .is_err());
+        sqlx::query("UPDATE contract_rulings SET created_at_ms = ? WHERE ruling_id = ?")
+            .bind(i64::try_from(T0 + 5).unwrap())
+            .bind(second.ruling_id.to_string())
+            .execute(&store.pool)
+            .await
+            .unwrap();
 
         let loaded_first = store.load_contract_ruling(&first.ruling_id).await.unwrap();
         assert_eq!(loaded_first.superseded_by, Some(second.ruling_id));
@@ -2947,6 +2992,21 @@ mod tests {
             .unwrap();
         assert!(renewed.inserted, "an expired ruling is not reused");
         assert_ne!(renewed.ruling_id, second.ruling_id);
+        sqlx::query("UPDATE contract_rulings SET created_at_ms = -1 WHERE ruling_id = ?")
+            .bind(renewed.ruling_id.to_string())
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        assert!(store
+            .persist_contract_ruling(&target_id, &context.evidence_id, &renewal, None, T0 + 102)
+            .await
+            .is_err());
+        sqlx::query("UPDATE contract_rulings SET created_at_ms = ? WHERE ruling_id = ?")
+            .bind(i64::try_from(T0 + 101).unwrap())
+            .bind(renewed.ruling_id.to_string())
+            .execute(&store.pool)
+            .await
+            .unwrap();
 
         let url = format!("sqlite://{}", dir.path().join("bar.db").display());
         let reopened = Store::connect(&url).await.unwrap();

@@ -179,9 +179,11 @@ impl Store {
                     load_contract_ruling_row(&mut tx, &replacement_id, "load replayed ruling")
                         .await?;
                 if replacement.matches(&expected_replacement) {
+                    let replacement_id: RulingId = replacement_id.parse()?;
                     tx.commit().await.map_err(storage("commit"))?;
+                    self.load_contract_ruling(&replacement_id).await?;
                     return Ok(RulingPersistence {
-                        ruling_id: replacement_id.parse()?,
+                        ruling_id: replacement_id,
                         inserted: false,
                     });
                 }
@@ -219,9 +221,11 @@ impl Store {
             .await
             .map_err(storage("find reusable ruling"))?;
             if let Some(ruling_id) = reusable {
+                let ruling_id: RulingId = ruling_id.parse()?;
                 tx.commit().await.map_err(storage("commit"))?;
+                self.load_contract_ruling(&ruling_id).await?;
                 return Ok(RulingPersistence {
-                    ruling_id: ruling_id.parse()?,
+                    ruling_id,
                     inserted: false,
                 });
             }

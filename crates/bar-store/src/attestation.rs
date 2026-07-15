@@ -58,9 +58,11 @@ impl Store {
         .await
         .map_err(storage("find scope context attestation"))?;
         if let Some(evidence_id) = existing {
+            let evidence_id: EvidenceId = evidence_id.parse()?;
             tx.commit().await.map_err(storage("commit"))?;
+            self.load_scope_context_attestation(&evidence_id).await?;
             return Ok(ScopeContextAttestationPersistence {
-                evidence_id: evidence_id.parse()?,
+                evidence_id,
                 inserted: false,
             });
         }
