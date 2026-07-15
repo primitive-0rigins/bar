@@ -66,9 +66,13 @@ versioned operator rulings when overlap remains ambiguous.
   directions, scoped exceptions, repeated ambiguity, missing context,
   feature-flag scope, expired/future windows, malformed temporal declarations,
   and inactive historical text.
+- Scope now supports validated `source_revision_range` and `deployment_range`
+  fields using the strict §7.2.1 release-version comparator grammar. Exact
+  identifiers retain exact matching; invalid ranges and unparseable observed
+  versions resolve as ambiguous rather than selecting a contract.
 
-All 112 repository tests pass; clippy `-D warnings` and fmt are clean.
-Implementation revisions: `5a9b3ef`, `f9e71af`, `414be5c`, `15adcfd`, `ed0f016`, `2054c8d`, `a93a672`, `5483b93`, `3e63c89`.
+All 113 repository tests pass; clippy `-D warnings` and fmt are clean.
+Implementation revisions: `5a9b3ef`, `f9e71af`, `414be5c`, `15adcfd`, `ed0f016`, `2054c8d`, `a93a672`, `5483b93`, `3e63c89`, `ee9b01d`.
 
 ### Remaining before Phase 4 completion
 
@@ -81,8 +85,6 @@ Implementation revisions: `5a9b3ef`, `f9e71af`, `414be5c`, `15adcfd`, `ed0f016`,
   and its rejected alternatives; the dashboard/API workflow is Phase 8.
 - Obtain human review and write Phase 4 completion evidence after the remaining
   scope semantics are complete.
-- Define validated semantic version-range interpretation; current
-  source-revision matching is exact-value only.
 
 ### Roadmap addition — concurrent multi-runtime monitoring
 
