@@ -2589,6 +2589,36 @@ mod tests {
         chain.verify().unwrap();
         assert_eq!(chain.len(), 5, "failure and replay emit no evidence events");
 
+        let other_root = tempfile::tempdir().unwrap();
+        let other_target = store
+            .register_target(&tree_target(other_root.path()), T0 + 4)
+            .await
+            .unwrap()
+            .target_id;
+        sqlx::query("UPDATE scope_context_evidence SET target_id = ? WHERE evidence_id = ?")
+            .bind(other_target.to_string())
+            .bind(first.evidence_id.to_string())
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        assert!(store
+            .persist_scope_context_evidence(
+                &target_id,
+                &revision_id,
+                &supplied,
+                &source,
+                T0 + 1,
+                T0 + 4,
+            )
+            .await
+            .is_err());
+        sqlx::query("UPDATE scope_context_evidence SET target_id = ? WHERE evidence_id = ?")
+            .bind(target_id.to_string())
+            .bind(first.evidence_id.to_string())
+            .execute(&store.pool)
+            .await
+            .unwrap();
+
         sqlx::query(
             "UPDATE scope_context_evidence SET exact_text_sha256 = ? WHERE evidence_id = ?",
         )
@@ -2631,7 +2661,11 @@ mod tests {
             )
             .await
             .is_err());
-        assert_eq!(store.load_audit_chain().await.unwrap().len(), 5);
+        assert_eq!(
+            store.load_audit_chain().await.unwrap().len(),
+            6,
+            "the second target is audited; failed evidence writes add no events"
+        );
     }
 
     #[tokio::test]

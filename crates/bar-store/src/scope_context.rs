@@ -173,9 +173,11 @@ impl Store {
         .await
         .map_err(storage("lookup scope context evidence"))?;
         if let Some(evidence_id) = existing {
+            let evidence_id: EvidenceId = evidence_id.parse()?;
             tx.commit().await.map_err(storage("commit"))?;
+            self.load_scope_context_evidence(&evidence_id).await?;
             return Ok(ScopeContextPersistence {
-                evidence_id: evidence_id.parse()?,
+                evidence_id,
                 inserted: false,
             });
         }
