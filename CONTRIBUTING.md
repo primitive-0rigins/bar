@@ -18,9 +18,19 @@ spec is changed deliberately, in its own commit).
 ## Before you commit
 
 ```sh
-cargo fmt
-cargo clippy --all-targets
-cargo test
+cargo fmt --all
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace --all-targets
 ```
 
 Update [`STATUS.md`](STATUS.md) when a phase item is completed.
+
+## Pull requests
+
+- Keep each pull request focused on one behavior or documentation change.
+- Explain the spec requirement, user-visible effect, and verification in the
+  pull request description.
+- Include tests for changed behavior. Do not weaken verification gates to make
+  a change pass.
+- Do not report vulnerabilities in public issues or pull requests; follow
+  [`SECURITY.md`](SECURITY.md) instead.

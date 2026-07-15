@@ -86,18 +86,43 @@ the tree always builds clean.
 
 ## Build
 
+### Quick start
+
+BAR currently provides its model-free bootstrap daemon while the remaining
+phases are under construction. From a checkout with a stable Rust toolchain
+(1.85+):
+
 ```sh
-cargo test          # build + run the test suite
-cargo clippy        # lint (warnings are treated as defects here)
-cargo fmt --check   # formatting
+cargo run -p bar-daemon
 ```
 
-Requires a stable Rust toolchain (1.85+).
+The command initializes structured logging, reports its model-free readiness,
+and exits cleanly. It does not yet watch a target or expose the planned API;
+those capabilities land in later phases. Set `BAR_LOG_FORMAT=json` for
+machine-readable logs. The daemon uses built-in defaults when no configuration
+file is present; set `BAR_CONFIG=/path/to/bar.toml` to load an explicit,
+validated configuration. Its complete contract is in
+[`docs/spec.md`](docs/spec.md#appendix-c-complete-configuration-contract).
+
+### Verify a checkout
+
+```sh
+cargo test --workspace --all-targets
+cargo clippy --workspace --all-targets -- -D warnings
+cargo fmt --all -- --check
+```
+
+CI runs the same format, lint, and test gates on every pull request. See
+[`CONTRIBUTING.md`](CONTRIBUTING.md) for contribution expectations and
+[`SECURITY.md`](SECURITY.md) to report a vulnerability privately.
 
 ## Documentation
 
 - [`docs/spec.md`](docs/spec.md) — the complete, normative implementation
   specification and build manual (the contract this repo is built against).
+- [`STATUS.md`](STATUS.md) — current phase, delivered evidence, and known debt.
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) — development and review expectations.
+- [`SECURITY.md`](SECURITY.md) — vulnerability reporting policy.
 
 ## License
 

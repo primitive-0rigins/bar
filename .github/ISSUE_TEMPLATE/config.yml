@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/primitive-0rigins/bar/security/advisories/new
+    about: Report suspected vulnerabilities privately. Do not open a public issue.
+  - name: BAR specification
+    url: https://github.com/primitive-0rigins/bar/blob/main/docs/spec.md
+    about: Read the normative build specification before proposing implementation work.
