@@ -15,9 +15,11 @@ conflict candidates, and treats optional-model output as untrusted data.
   conservative behavioral/architecture level; and fingerprints the normalized
   statement plus exact source identity and byte span.
 - Segmentation now covers Markdown headings, multiline paragraphs with
-  sentence boundaries, list items, table cells, single-line HTML comments, and
-  Rust-style line comments. Fenced Markdown code/examples are excluded so
-  example `MUST` text cannot become an active-looking candidate.
+  sentence boundaries, list items, table cells, Markdown blockquote lines,
+  single- and multiline HTML/Rust-style block comments, and Rust-style line
+  comments. Unclosed comment blocks are discarded conservatively. Fenced
+  Markdown code/examples are excluded so example `MUST` text cannot become an
+  active-looking candidate.
 - Claims inherit the nearest Markdown heading as a source-bound structural
   hierarchy candidate. This is a proposal only—it does not establish an
   authoritative parent contract.
@@ -55,13 +57,14 @@ conflict candidates, and treats optional-model output as untrusted data.
 
 The implemented slice passes the two Phase 3 safety invariants: every emitted
 claim cites verified source bytes, and malformed or source-inconsistent model
-output is rejected. The full phase is not complete. All 91 repository tests
+output is rejected. The full phase is not complete. All 92 repository tests
 pass; clippy `-D warnings` and fmt are clean. Implementation revisions:
-`3fb0fc6`, `74e1408`, `85fff4d`, and `b483f02`.
+`3fb0fc6`, `74e1408`, `85fff4d`, `b483f02`, and `3ca47dc`.
 
 ### Remaining before Phase 3 completion
 
-- Multiline HTML/comment blocks, blockquotes, and additional prose formats.
+- Multiline blockquote paragraphs and additional prose formats; current
+  blockquote extraction is line-based.
 - Explicit-reference hierarchy and semantic hierarchy proposals; current
   attachment is structural Markdown containment only.
 - Glossary/alias graph corroboration and operator correction inputs;
