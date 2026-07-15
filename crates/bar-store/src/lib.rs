@@ -723,11 +723,13 @@ impl Store {
                 supersessions_inserted += 1;
             }
         }
-        tx.commit().await.map_err(storage("commit"))?;
-        Ok(ContractResolutionPersistence {
+        let persistence = ContractResolutionPersistence {
             scope_assigned,
             supersessions_inserted,
-        })
+        };
+        tx.commit().await.map_err(storage("commit"))?;
+        self.load_contract_resolution(contract_id).await?;
+        Ok(persistence)
     }
 
     /// Reloads the immutable resolution inputs for one contract. Superseded
@@ -750,38 +752,51 @@ impl Store {
                 "contract {contract_id} has no resolved scope"
             )));
         }
+        let target_id: TargetId = row.target_id.parse()?;
+        let target_key = target_id.to_string();
         let scope: ContractScope = serde_json::from_str(&row.scope_json)
             .map_err(|e| Error::Corrupt(format!("invalid persisted contract scope: {e}")))?;
         let valid_from_ms = stored_timestamp(row.valid_from_ms)?;
         let valid_until_ms = stored_timestamp(row.valid_until_ms)?;
         validate_declaration(&scope, valid_from_ms, valid_until_ms)?;
-        let superseded: i64 = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM contract_supersessions \
-             WHERE superseded_contract_id = ?)",
+        let incoming: Vec<(String, Option<String>)> = sqlx::query_as(
+            "SELECT s.superseding_contract_id, c.target_id \
+             FROM contract_supersessions s \
+             LEFT JOIN contracts c ON c.contract_id = s.superseding_contract_id \
+             WHERE s.superseded_contract_id = ?",
         )
         .bind(contract_id.to_string())
-        .fetch_one(&self.pool)
+        .fetch_all(&self.pool)
         .await
-        .map_err(storage("load incoming supersession"))?;
-        let supersedes: Vec<String> = sqlx::query_scalar(
-            "SELECT superseded_contract_id FROM contract_supersessions \
-             WHERE superseding_contract_id = ? ORDER BY superseded_contract_id",
+        .map_err(storage("load incoming supersessions"))?;
+        let outgoing: Vec<(String, Option<String>)> = sqlx::query_as(
+            "SELECT s.superseded_contract_id, c.target_id \
+             FROM contract_supersessions s \
+             LEFT JOIN contracts c ON c.contract_id = s.superseded_contract_id \
+             WHERE s.superseding_contract_id = ? ORDER BY s.superseded_contract_id",
         )
         .bind(contract_id.to_string())
         .fetch_all(&self.pool)
         .await
         .map_err(storage("load outgoing supersessions"))?;
+        for (linked_contract_id, linked_target) in incoming.iter().chain(outgoing.iter()) {
+            if linked_target.as_deref() != Some(target_key.as_str()) {
+                return Err(Error::Corrupt(format!(
+                    "contract supersession {contract_id} crosses target boundary at {linked_contract_id}"
+                )));
+            }
+        }
         Ok(StoredContractResolution {
             contract_id: *contract_id,
             scope,
             temporal: TemporalWindow {
                 valid_from_ms,
                 valid_until_ms,
-                superseded: superseded == 1,
+                superseded: !incoming.is_empty(),
             },
-            supersedes: supersedes
+            supersedes: outgoing
                 .into_iter()
-                .map(|id| id.parse())
+                .map(|(id, _)| id.parse())
                 .collect::<Result<Vec<_>>>()?,
         })
     }
@@ -2373,6 +2388,25 @@ mod tests {
         let chain = store.load_audit_chain().await.unwrap();
         chain.verify().unwrap();
         assert_eq!(chain.len(), 9, "failed writes and replay emit no events");
+
+        let other_repo = tempfile::tempdir().unwrap();
+        let other_root = std::fs::canonicalize(other_repo.path()).unwrap();
+        let other_target = store
+            .register_target(&tree_target(&other_root), T0 + 8)
+            .await
+            .unwrap()
+            .target_id;
+        sqlx::query("UPDATE contracts SET target_id = ? WHERE contract_id = ?")
+            .bind(other_target.to_string())
+            .bind(old_id.to_string())
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        assert!(store.load_contract_resolution(&new_id).await.is_err());
+        assert!(store
+            .assign_contract_resolution(&new_id, &deployment_scope, Some(10), Some(30), &[], T0 + 9)
+            .await
+            .is_err());
 
         sqlx::query("UPDATE contracts SET scope_json = '{\"unknown\":[]}' WHERE contract_id = ?")
             .bind(new_id.to_string())
