@@ -28,14 +28,16 @@ versioned operator rulings when overlap remains ambiguous.
   definitive-defect state.
 - `bar-store` migration `0007` adds immutable scope/validity declarations and
   directed same-target supersession edges. The first assignment and every new
-  edge are audited atomically; exact replay is a no-op, changed declarations
-  are rejected, and an invalid edge rolls back the complete transaction.
+  edge are audited atomically; exact replay revalidates the declaration and
+  edge target ownership before becoming a no-op, changed declarations are
+  rejected, and an invalid edge rolls back the complete transaction.
 - Resolution inputs reload after database reopen into the pure resolver.
-  Incoming supersession edges derive `TemporalWindow::superseded`; scope JSON,
-  inverted/negative timestamps, unknown scope state, and out-of-range external
-  millisecond values fail closed. Applicability remains deliberately derived
-  from durable declarations plus evidence-bound context instead of being
-  stored as stale context-free state.
+  Incoming supersession edges derive `TemporalWindow::superseded`; both edge
+  endpoints must belong to the contract target. Scope JSON, inverted/negative
+  timestamps, unknown scope state, and out-of-range external millisecond values
+  fail closed. Applicability remains deliberately derived from durable
+  declarations plus evidence-bound context instead of being stored as stale
+  context-free state.
 - `bar-store` migration `0008` adds immutable scope-context evidence bound to a
   target, revision, observed timestamp, and complete inventoried artifact. The
   whole-artifact digest remains independently verifiable until excerpt evidence
@@ -78,7 +80,7 @@ versioned operator rulings when overlap remains ambiguous.
   versions resolve as ambiguous rather than selecting a contract.
 
 All 113 repository tests pass; clippy `-D warnings` and fmt are clean.
-Implementation revisions: `5a9b3ef`, `f9e71af`, `414be5c`, `15adcfd`, `ed0f016`, `2054c8d`, `a93a672`, `5483b93`, `3e63c89`, `ee9b01d`, `1862d2e`, `1c21194`, `d3d4c2a`.
+Implementation revisions: `5a9b3ef`, `f9e71af`, `414be5c`, `15adcfd`, `ed0f016`, `2054c8d`, `a93a672`, `5483b93`, `3e63c89`, `ee9b01d`, `1862d2e`, `1c21194`, `d3d4c2a`, `3ec5aa9`.
 
 ### Remaining before Phase 4 completion
 
