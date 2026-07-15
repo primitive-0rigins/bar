@@ -26,7 +26,7 @@ use bar_core::{
     ContractId, ContractLevel, Error, NormativeKind, Result, RevisionId, Sha256Digest, TargetId,
 };
 use bar_discovery::dependency::{validate_logical_path, ArtifactDependency};
-use bar_discovery::{ArtifactKind, Inventory, PriorArtifact, PriorInventory};
+use bar_discovery::{ArtifactKind, DiscoveredArtifact, Inventory, PriorArtifact, PriorInventory};
 use bar_target::{ConnectorKind, ResolvedTarget, RevisionIdentity, TargetStatus};
 use sqlx::sqlite::{Sqlite, SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
 use sqlx::{FromRow, Transaction};
@@ -312,7 +312,8 @@ impl Store {
 
         for artifact in &inventory.artifacts {
             let artifact_id = artifact.artifact_id(revision_id);
-            sqlx::query(
+            let size_bytes = required_sqlite_u64(artifact.size_bytes, "artifact size")?;
+            let inserted = sqlx::query(
                 "INSERT INTO artifacts \
                  (artifact_id, target_id, revision_id, logical_path, content_sha256, media_type, \
                   artifact_kind, source_of_truth, size_bytes, modified_at_ms, discovered_at_ms) \
@@ -326,12 +327,34 @@ impl Store {
             .bind(&artifact.media_type)
             .bind(artifact.artifact_kind.as_str())
             .bind(i64::from(artifact.source_of_truth))
-            .bind(required_sqlite_u64(artifact.size_bytes, "artifact size")?)
+            .bind(size_bytes)
             .bind(artifact.modified_at_ms)
             .bind(now)
             .execute(&mut *tx)
             .await
-            .map_err(storage("insert artifact"))?;
+            .map_err(storage("insert artifact"))?
+            .rows_affected();
+            if inserted == 0 {
+                let persisted: Option<PersistedArtifactRow> = sqlx::query_as(
+                    "SELECT target_id, revision_id, content_sha256, media_type, artifact_kind, \
+                            source_of_truth, size_bytes, modified_at_ms \
+                     FROM artifacts WHERE revision_id = ? AND logical_path = ?",
+                )
+                .bind(revision_id.to_string())
+                .bind(&artifact.logical_path)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(storage("load persisted artifact"))?;
+                let matches_submission = persisted.is_some_and(|persisted| {
+                    persisted.matches_submission(target_id, revision_id, artifact, size_bytes)
+                });
+                if !matches_submission {
+                    return Err(Error::Corrupt(format!(
+                        "persisted artifact {} does not match inventory submission",
+                        artifact.logical_path
+                    )));
+                }
+            }
         }
 
         let s = &inventory.summary;
@@ -1277,6 +1300,19 @@ struct ArtifactRow {
     modified_at_ms: Option<i64>,
 }
 
+/// A durable artifact row used to verify an idempotent inventory replay.
+#[derive(FromRow)]
+struct PersistedArtifactRow {
+    target_id: String,
+    revision_id: String,
+    content_sha256: String,
+    media_type: String,
+    artifact_kind: String,
+    source_of_truth: i64,
+    size_bytes: i64,
+    modified_at_ms: Option<i64>,
+}
+
 #[derive(FromRow)]
 struct DependencyRow {
     dependent_path: String,
@@ -1504,6 +1540,25 @@ impl ArtifactRow {
             size_bytes,
             modified_at_ms: self.modified_at_ms,
         })
+    }
+}
+
+impl PersistedArtifactRow {
+    fn matches_submission(
+        &self,
+        target_id: &TargetId,
+        revision_id: &RevisionId,
+        artifact: &DiscoveredArtifact,
+        size_bytes: i64,
+    ) -> bool {
+        self.target_id == target_id.to_string()
+            && self.revision_id == revision_id.to_string()
+            && self.content_sha256 == artifact.content_sha256
+            && self.media_type == artifact.media_type
+            && self.artifact_kind == artifact.artifact_kind.as_str()
+            && self.source_of_truth == i64::from(artifact.source_of_truth)
+            && self.size_bytes == size_bytes
+            && self.modified_at_ms == artifact.modified_at_ms
     }
 }
 
@@ -1898,6 +1953,28 @@ mod tests {
         assert!(chain.records()[2..]
             .iter()
             .all(|record| record.event.subject.as_deref() == Some(target_subject.as_str())));
+
+        let readme = inv
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.logical_path == "README.md")
+            .unwrap();
+        sqlx::query("UPDATE artifacts SET media_type = 'forged/type' WHERE revision_id = ? AND logical_path = 'README.md'")
+            .bind(rev_id.to_string())
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        assert!(store
+            .persist_inventory(&target_id, &rev_id, &inv, T0 + 1)
+            .await
+            .is_err());
+        assert_eq!(store.load_audit_chain().await.unwrap().len(), 6);
+        sqlx::query("UPDATE artifacts SET media_type = ? WHERE revision_id = ? AND logical_path = 'README.md'")
+            .bind(&readme.media_type)
+            .bind(rev_id.to_string())
+            .execute(&store.pool)
+            .await
+            .unwrap();
 
         sqlx::query("UPDATE artifacts SET size_bytes = -1 WHERE revision_id = ?")
             .bind(rev_id.to_string())
