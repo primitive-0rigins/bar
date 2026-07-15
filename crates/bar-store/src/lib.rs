@@ -568,11 +568,23 @@ impl Store {
             contract_ids.push(contract_id);
         }
 
-        tx.commit().await.map_err(storage("commit"))?;
-        Ok(ContractPersistence {
+        let persistence = ContractPersistence {
             contract_ids,
             inserted,
-        })
+        };
+        tx.commit().await.map_err(storage("commit"))?;
+        let stored = self.load_contracts(revision_id).await?;
+        for (contract_id, claim) in persistence.contract_ids.iter().zip(claims) {
+            let matches_claim = stored
+                .iter()
+                .any(|contract| contract.contract_id == *contract_id && contract.claim == *claim);
+            if !matches_claim {
+                return Err(Error::Corrupt(format!(
+                    "persisted contract {contract_id} does not match its source-bound claim"
+                )));
+            }
+        }
+        Ok(persistence)
     }
 
     /// Reloads source-bound shadow contracts for a revision. Unknown persisted
@@ -2165,14 +2177,35 @@ mod tests {
         chain.verify().unwrap();
         assert_eq!(chain.len(), 6, "replay emits no duplicate contract events");
 
-        sqlx::query(
-            "UPDATE contracts SET normative_kind = 'unknown' \
-             WHERE contract_id = (SELECT contract_id FROM contracts LIMIT 1)",
-        )
-        .execute(&store.pool)
-        .await
-        .unwrap();
+        sqlx::query("UPDATE contract_sources SET exact_text_sha256 = ? WHERE contract_id = ?")
+            .bind("00".repeat(32))
+            .bind(first.contract_ids[0].to_string())
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        assert!(store
+            .persist_contracts(&target_id, &revision_id, &claims, T0 + 3)
+            .await
+            .is_err());
+        sqlx::query("UPDATE contract_sources SET exact_text_sha256 = ? WHERE contract_id = ?")
+            .bind(claims[0].source.exact_text_sha256.to_string())
+            .bind(first.contract_ids[0].to_string())
+            .execute(&store.pool)
+            .await
+            .unwrap();
+
+        sqlx::query("UPDATE contracts SET normative_kind = 'unknown' WHERE contract_id = ?")
+            .bind(first.contract_ids[0].to_string())
+            .execute(&store.pool)
+            .await
+            .unwrap();
         assert!(store.load_contracts(&revision_id).await.is_err());
+        sqlx::query("UPDATE contracts SET normative_kind = ? WHERE contract_id = ?")
+            .bind(claims[0].normative_kind.as_str())
+            .bind(first.contract_ids[0].to_string())
+            .execute(&store.pool)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
