@@ -963,6 +963,16 @@ impl Store {
         }
 
         tx.commit().await.map_err(storage("commit"))?;
+        let stored = self.load_analysis_candidates(revision_id).await?;
+        if stored.hierarchy != analysis.hierarchy
+            || stored.glossary != analysis.glossary
+            || stored.glossary_ambiguities != analysis.glossary_ambiguities
+            || stored.conflicts != analysis.conflicts
+        {
+            return Err(Error::Corrupt(
+                "persisted analysis candidates do not match submission".into(),
+            ));
+        }
         Ok(result)
     }
 
@@ -3230,6 +3240,15 @@ mod tests {
             7,
             "register + revision + scan pair + two contracts + one conflict"
         );
+
+        sqlx::query("UPDATE glossary_candidates SET definition = 'forged definition'")
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        assert!(store
+            .persist_analysis_candidates(&target_id, &revision_id, &analysis, T0 + 4)
+            .await
+            .is_err());
 
         sqlx::query("UPDATE contract_conflict_candidates SET status = 'unknown'")
             .execute(&store.pool)
