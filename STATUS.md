@@ -50,8 +50,8 @@ versioned operator rulings when overlap remains ambiguous.
   or reload, records an ordered contract-reference index, and audits creation
   and supersession atomically. An unchanged ambiguity reuses its active ruling;
   an edit creates a replacement record; expiry permits a new ruling; replay is
-  idempotent; corrupt persisted links, target boundaries, timestamps, or
-  serialized values fail closed on reload.
+  idempotent only after revalidation; corrupt persisted links, target
+  boundaries, timestamps, or serialized values fail closed on replay or reload.
 - `bar-store` migration `0011` adds closed durable ruling dispositions:
   `chosen`, `deferred`, `rejected`, and `request_more_evidence`. Chosen
   rulings preserve an interpretation and rejected alternatives; non-final
@@ -63,9 +63,10 @@ versioned operator rulings when overlap remains ambiguous.
 - `bar-store` migration `0010` adds immutable operator attestations for
   source-bound scope context. Each attestation is first-class evidence tied to
   the exact target/revision/context, is actor-audited and replay-idempotent, and
-  rejects malformed source context before write and on reload. The explicit
-  attested resolver consumes this human-trusted path without treating raw source
-  text as semantic proof.
+  revalidates existing records before returning a replay. It rejects malformed
+  source context before write and on reload. The explicit attested resolver
+  consumes this human-trusted path without treating raw source text as semantic
+  proof.
 - `fixtures/phase-4-resolution/expected.json` is a checked-in adversarial
   resolver corpus. Its strict, table-driven test covers both precedence
   directions, scoped exceptions, repeated ambiguity, missing context,
@@ -77,7 +78,7 @@ versioned operator rulings when overlap remains ambiguous.
   versions resolve as ambiguous rather than selecting a contract.
 
 All 113 repository tests pass; clippy `-D warnings` and fmt are clean.
-Implementation revisions: `5a9b3ef`, `f9e71af`, `414be5c`, `15adcfd`, `ed0f016`, `2054c8d`, `a93a672`, `5483b93`, `3e63c89`, `ee9b01d`, `1862d2e`, `1c21194`.
+Implementation revisions: `5a9b3ef`, `f9e71af`, `414be5c`, `15adcfd`, `ed0f016`, `2054c8d`, `a93a672`, `5483b93`, `3e63c89`, `ee9b01d`, `1862d2e`, `1c21194`, `d3d4c2a`.
 
 ### Remaining before Phase 4 completion
 
