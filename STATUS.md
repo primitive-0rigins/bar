@@ -52,6 +52,10 @@ versioned operator rulings when overlap remains ambiguous.
   an edit creates a replacement record; expiry permits a new ruling; replay is
   idempotent; corrupt persisted links, target boundaries, timestamps, or
   serialized values fail closed on reload.
+- `bar-store` migration `0011` adds closed durable ruling dispositions:
+  `chosen`, `deferred`, `rejected`, and `request_more_evidence`. Chosen
+  rulings preserve an interpretation and rejected alternatives; non-final
+  outcomes carry a clear reason without claiming a selected interpretation.
 - `bar-store::resolve_contract_in_context` resolves scope only at the persisted
   scope-context observation time and requires the contract and context evidence
   to belong to the same target. Callers can no longer reuse one evidence record
@@ -73,7 +77,7 @@ versioned operator rulings when overlap remains ambiguous.
   versions resolve as ambiguous rather than selecting a contract.
 
 All 113 repository tests pass; clippy `-D warnings` and fmt are clean.
-Implementation revisions: `5a9b3ef`, `f9e71af`, `414be5c`, `15adcfd`, `ed0f016`, `2054c8d`, `a93a672`, `5483b93`, `3e63c89`, `ee9b01d`, `1862d2e`.
+Implementation revisions: `5a9b3ef`, `f9e71af`, `414be5c`, `15adcfd`, `ed0f016`, `2054c8d`, `a93a672`, `5483b93`, `3e63c89`, `ee9b01d`, `1862d2e`, `1c21194`.
 
 ### Remaining before Phase 4 completion
 
@@ -81,9 +85,8 @@ Implementation revisions: `5a9b3ef`, `f9e71af`, `414be5c`, `15adcfd`, `ed0f016`,
   component, mode, flags, and tenant values automatically. Operator
   attestations now provide a source-bound human-trusted path, but BAR does not
   infer semantic values from cited bytes on its own.
-- Model the remaining operator dispositions (defer, reject, and request more
-  evidence). The durable ruling core currently captures a chosen interpretation
-  and its rejected alternatives; the dashboard/API workflow is Phase 8.
+- Expose the durable operator dispositions through the dashboard/API workflow
+  in Phase 8.
 - Obtain human review and write Phase 4 completion evidence after the remaining
   scope semantics are complete.
 
