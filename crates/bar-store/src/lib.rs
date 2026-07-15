@@ -34,6 +34,7 @@ use bar_target::{ConnectorKind, ResolvedTarget, RevisionIdentity, TargetStatus};
 use sqlx::sqlite::{Sqlite, SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
 use sqlx::{FromRow, Transaction};
 
+mod context_resolution;
 mod ruling;
 
 pub use ruling::{RulingPersistence, StoredContractRuling};
@@ -2770,6 +2771,156 @@ mod tests {
         .unwrap();
         assert!(reopened
             .load_scope_context_evidence(&first.evidence_id)
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn context_resolution_uses_evidence_time_and_rejects_cross_target_context() {
+        use bar_contract::scope::ApplicabilityState;
+        use bar_contract::{extract_deterministic, ArtifactText};
+
+        let repo = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(repo.path()).unwrap();
+        let text = "The cache MUST retain entries.";
+        write_file(&root, "README.md", text.as_bytes());
+        let (store, _dir) = temp_store().await;
+        let target_id = store
+            .register_target(&tree_target(&root), T0)
+            .await
+            .unwrap()
+            .target_id;
+        let revision_id = store
+            .record_revision(&target_id, &revision("commit-a", None), T0)
+            .await
+            .unwrap()
+            .revision_id;
+        let inventory = bar_discovery::scan(
+            &root,
+            &bar_discovery::ScanConfig::default(),
+            &PriorInventory::new(),
+        )
+        .unwrap();
+        store
+            .persist_inventory(&target_id, &revision_id, &inventory, T0)
+            .await
+            .unwrap();
+        let artifact = &inventory.artifacts[0];
+        let artifact_text = ArtifactText::new(
+            artifact.artifact_id(&revision_id),
+            &artifact.logical_path,
+            artifact.content_sha256.parse().unwrap(),
+            text,
+        )
+        .unwrap();
+        let contract_id = store
+            .persist_contracts(
+                &target_id,
+                &revision_id,
+                &extract_deterministic(&artifact_text).unwrap(),
+                T0 + 1,
+            )
+            .await
+            .unwrap()
+            .contract_ids[0];
+        store
+            .assign_contract_resolution(
+                &contract_id,
+                &ContractScope::default(),
+                Some(T0 + 10),
+                Some(T0 + 20),
+                &[],
+                T0 + 2,
+            )
+            .await
+            .unwrap();
+        let source = SourceRef {
+            artifact_id: artifact.artifact_id(&revision_id),
+            start_offset: 0,
+            end_offset: text.len(),
+            exact_text_sha256: artifact.content_sha256.parse().unwrap(),
+        };
+        let observed_during_validity = store
+            .persist_scope_context_evidence(
+                &target_id,
+                &revision_id,
+                &ScopeContext::default(),
+                &source,
+                T0 + 15,
+                T0 + 15,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            store
+                .resolve_contract_in_context(&contract_id, &observed_during_validity.evidence_id)
+                .await
+                .unwrap()
+                .state,
+            ApplicabilityState::Applicable
+        );
+        let observed_after_expiry = store
+            .persist_scope_context_evidence(
+                &target_id,
+                &revision_id,
+                &ScopeContext::default(),
+                &source,
+                T0 + 21,
+                T0 + 21,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            store
+                .resolve_contract_in_context(&contract_id, &observed_after_expiry.evidence_id)
+                .await
+                .unwrap()
+                .state,
+            ApplicabilityState::NotApplicable
+        );
+
+        let other_repo = tempfile::tempdir().unwrap();
+        let other_root = std::fs::canonicalize(other_repo.path()).unwrap();
+        write_file(&other_root, "README.md", text.as_bytes());
+        let other_target = store
+            .register_target(&tree_target(&other_root), T0)
+            .await
+            .unwrap()
+            .target_id;
+        let other_revision = store
+            .record_revision(&other_target, &revision("commit-b", None), T0)
+            .await
+            .unwrap()
+            .revision_id;
+        let other_inventory = bar_discovery::scan(
+            &other_root,
+            &bar_discovery::ScanConfig::default(),
+            &PriorInventory::new(),
+        )
+        .unwrap();
+        store
+            .persist_inventory(&other_target, &other_revision, &other_inventory, T0)
+            .await
+            .unwrap();
+        let other_artifact = &other_inventory.artifacts[0];
+        let other_context = store
+            .persist_scope_context_evidence(
+                &other_target,
+                &other_revision,
+                &ScopeContext::default(),
+                &SourceRef {
+                    artifact_id: other_artifact.artifact_id(&other_revision),
+                    start_offset: 0,
+                    end_offset: text.len(),
+                    exact_text_sha256: other_artifact.content_sha256.parse().unwrap(),
+                },
+                T0 + 15,
+                T0 + 15,
+            )
+            .await
+            .unwrap();
+        assert!(store
+            .resolve_contract_in_context(&contract_id, &other_context.evidence_id)
             .await
             .is_err());
     }
