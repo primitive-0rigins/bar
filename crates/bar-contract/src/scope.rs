@@ -127,6 +127,26 @@ pub enum ConflictDisposition {
     AdjudicationRequired,
 }
 
+/// Validates a declared scope and inclusive validity bounds before they cross
+/// a persistence boundary.
+pub fn validate_declaration(
+    scope: &ContractScope,
+    valid_from_ms: Option<u64>,
+    valid_until_ms: Option<u64>,
+) -> Result<()> {
+    if !scope_is_valid(scope) {
+        return Err(Error::Corrupt(
+            "contract scope contains an empty value".into(),
+        ));
+    }
+    if matches!((valid_from_ms, valid_until_ms), (Some(from), Some(until)) if from > until) {
+        return Err(Error::Corrupt(
+            "contract validity starts after it ends".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Resolves one contract without guessing when scope or time is malformed or
 /// incomplete.
 pub fn resolve_applicability(
@@ -405,6 +425,7 @@ mod tests {
             valid_until_ms: Some(10),
             superseded: false,
         };
+        assert!(validate_declaration(&scope, Some(20), Some(10)).is_err());
         assert_eq!(
             resolve_applicability(required(&scope, &invalid), &matching, 15).state,
             ApplicabilityState::Ambiguous
@@ -414,6 +435,7 @@ mod tests {
             components: vec![" ".into()],
             ..ContractScope::default()
         };
+        assert!(validate_declaration(&malformed, None, None).is_err());
         assert_eq!(
             resolve_applicability(
                 required(&malformed, &TemporalWindow::default()),

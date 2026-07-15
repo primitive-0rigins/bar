@@ -17,6 +17,7 @@ use std::collections::HashMap;
 use std::str::FromStr;
 
 use bar_audit::{record_hash, AuditCategory, AuditChain, AuditEvent, AuditRecord, GENESIS};
+use bar_contract::scope::{validate_declaration, ContractScope, TemporalWindow};
 use bar_contract::{
     glossary_ambiguities, ConflictCandidate, CorpusAnalysis, ExtractedClaim,
     GlossaryAmbiguityCandidate, GlossaryCandidate, HierarchyCandidate, SourceRef,
@@ -543,6 +544,200 @@ impl Store {
         rows.into_iter().map(ContractRow::into_contract).collect()
     }
 
+    /// Assigns a contract's scope and validity exactly once and records any
+    /// same-target contracts it supersedes. Exact replay is a no-op; a changed
+    /// declaration or invalid edge rolls back the complete transaction.
+    pub async fn assign_contract_resolution(
+        &self,
+        contract_id: &ContractId,
+        scope: &ContractScope,
+        valid_from_ms: Option<u64>,
+        valid_until_ms: Option<u64>,
+        supersedes: &[ContractId],
+        now_ms: u64,
+    ) -> Result<ContractResolutionPersistence> {
+        validate_declaration(scope, valid_from_ms, valid_until_ms)?;
+        let valid_from = sqlite_timestamp(valid_from_ms)?;
+        let valid_until = sqlite_timestamp(valid_until_ms)?;
+        let now = i64::try_from(now_ms)
+            .map_err(|_| Error::Corrupt("timestamp exceeds SQLite integer range".into()))?;
+        let scope_json = serde_json::to_string(scope)
+            .map_err(|e| Error::Corrupt(format!("serialize contract scope: {e}")))?;
+        let mut tx = self.pool.begin().await.map_err(storage("begin"))?;
+
+        let row: Option<ContractResolutionRow> = sqlx::query_as(
+            "SELECT target_id, scope_resolved, scope_json, valid_from_ms, valid_until_ms \
+             FROM contracts WHERE contract_id = ?",
+        )
+        .bind(contract_id.to_string())
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(storage("load contract resolution"))?;
+        let row = row.ok_or_else(|| {
+            Error::Corrupt(format!("scope references unknown contract {contract_id}"))
+        })?;
+
+        for superseded in supersedes {
+            if superseded == contract_id {
+                return Err(Error::Corrupt("a contract cannot supersede itself".into()));
+            }
+            let target: Option<String> =
+                sqlx::query_scalar("SELECT target_id FROM contracts WHERE contract_id = ?")
+                    .bind(superseded.to_string())
+                    .fetch_optional(&mut *tx)
+                    .await
+                    .map_err(storage("load superseded contract"))?;
+            if target.as_deref() != Some(row.target_id.as_str()) {
+                return Err(Error::Corrupt(format!(
+                    "superseded contract {superseded} is missing or belongs to another target"
+                )));
+            }
+        }
+
+        let scope_assigned = match row.scope_resolved {
+            0 => {
+                sqlx::query(
+                    "UPDATE contracts SET scope_json = ?, valid_from_ms = ?, valid_until_ms = ?, \
+                     scope_resolved = 1, version = version + 1 WHERE contract_id = ?",
+                )
+                .bind(&scope_json)
+                .bind(valid_from)
+                .bind(valid_until)
+                .bind(contract_id.to_string())
+                .execute(&mut *tx)
+                .await
+                .map_err(storage("assign contract resolution"))?;
+                append_audit(
+                    &mut tx,
+                    AuditEvent {
+                        category: AuditCategory::EvidenceMutation,
+                        actor: SYSTEM_ACTOR.to_string(),
+                        summary: "assigned shadow contract scope and validity".into(),
+                        subject: Some(contract_id.to_string()),
+                        occurred_at_ms: now_ms,
+                    },
+                )
+                .await?;
+                true
+            }
+            1 => {
+                let stored_scope: ContractScope =
+                    serde_json::from_str(&row.scope_json).map_err(|e| {
+                        Error::Corrupt(format!("invalid persisted contract scope: {e}"))
+                    })?;
+                validate_declaration(
+                    &stored_scope,
+                    stored_timestamp(row.valid_from_ms)?,
+                    stored_timestamp(row.valid_until_ms)?,
+                )?;
+                if stored_scope != *scope
+                    || row.valid_from_ms != valid_from
+                    || row.valid_until_ms != valid_until
+                {
+                    return Err(Error::Conflict(format!(
+                        "contract {contract_id} already has a different scope or validity"
+                    )));
+                }
+                false
+            }
+            other => {
+                return Err(Error::Corrupt(format!(
+                    "unknown contract scope state `{other}`"
+                )))
+            }
+        };
+
+        let mut supersessions_inserted = 0;
+        for superseded in supersedes {
+            let result = sqlx::query(
+                "INSERT INTO contract_supersessions \
+                 (superseding_contract_id, superseded_contract_id, created_at_ms) \
+                 VALUES (?, ?, ?) ON CONFLICT DO NOTHING",
+            )
+            .bind(contract_id.to_string())
+            .bind(superseded.to_string())
+            .bind(now)
+            .execute(&mut *tx)
+            .await
+            .map_err(storage("insert contract supersession"))?;
+            if result.rows_affected() == 1 {
+                append_audit(
+                    &mut tx,
+                    AuditEvent {
+                        category: AuditCategory::EvidenceMutation,
+                        actor: SYSTEM_ACTOR.to_string(),
+                        summary: format!("recorded shadow contract supersession of {superseded}"),
+                        subject: Some(contract_id.to_string()),
+                        occurred_at_ms: now_ms,
+                    },
+                )
+                .await?;
+                supersessions_inserted += 1;
+            }
+        }
+        tx.commit().await.map_err(storage("commit"))?;
+        Ok(ContractResolutionPersistence {
+            scope_assigned,
+            supersessions_inserted,
+        })
+    }
+
+    /// Reloads the immutable resolution inputs for one contract. Superseded
+    /// state is derived from incoming edges and malformed storage fails closed.
+    pub async fn load_contract_resolution(
+        &self,
+        contract_id: &ContractId,
+    ) -> Result<StoredContractResolution> {
+        let row: Option<ContractResolutionRow> = sqlx::query_as(
+            "SELECT target_id, scope_resolved, scope_json, valid_from_ms, valid_until_ms \
+             FROM contracts WHERE contract_id = ?",
+        )
+        .bind(contract_id.to_string())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(storage("load contract resolution"))?;
+        let row = row.ok_or_else(|| Error::Corrupt(format!("unknown contract {contract_id}")))?;
+        if row.scope_resolved != 1 {
+            return Err(Error::Corrupt(format!(
+                "contract {contract_id} has no resolved scope"
+            )));
+        }
+        let scope: ContractScope = serde_json::from_str(&row.scope_json)
+            .map_err(|e| Error::Corrupt(format!("invalid persisted contract scope: {e}")))?;
+        let valid_from_ms = stored_timestamp(row.valid_from_ms)?;
+        let valid_until_ms = stored_timestamp(row.valid_until_ms)?;
+        validate_declaration(&scope, valid_from_ms, valid_until_ms)?;
+        let superseded: i64 = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM contract_supersessions \
+             WHERE superseded_contract_id = ?)",
+        )
+        .bind(contract_id.to_string())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(storage("load incoming supersession"))?;
+        let supersedes: Vec<String> = sqlx::query_scalar(
+            "SELECT superseded_contract_id FROM contract_supersessions \
+             WHERE superseding_contract_id = ? ORDER BY superseded_contract_id",
+        )
+        .bind(contract_id.to_string())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(storage("load outgoing supersessions"))?;
+        Ok(StoredContractResolution {
+            contract_id: *contract_id,
+            scope,
+            temporal: TemporalWindow {
+                valid_from_ms,
+                valid_until_ms,
+                superseded: superseded == 1,
+            },
+            supersedes: supersedes
+                .into_iter()
+                .map(|id| id.parse())
+                .collect::<Result<Vec<_>>>()?,
+        })
+    }
+
     /// Persists structural hierarchy, glossary, and conflict candidates after
     /// their claim fingerprints have been resolved to contracts. The complete
     /// candidate set is validated before any row is written.
@@ -825,6 +1020,23 @@ async fn append_audit(tx: &mut Transaction<'_, Sqlite>, event: AuditEvent) -> Re
 /// The actor recorded for events BAR originates itself.
 const SYSTEM_ACTOR: &str = "system";
 
+fn sqlite_timestamp(value: Option<u64>) -> Result<Option<i64>> {
+    value
+        .map(|value| {
+            i64::try_from(value)
+                .map_err(|_| Error::Corrupt("timestamp exceeds SQLite integer range".into()))
+        })
+        .transpose()
+}
+
+fn stored_timestamp(value: Option<i64>) -> Result<Option<u64>> {
+    value
+        .map(|value| {
+            u64::try_from(value).map_err(|_| Error::Corrupt("negative stored timestamp".into()))
+        })
+        .transpose()
+}
+
 /// Builds a storage-error mapper tagged with the operation that failed.
 fn storage(op: &'static str) -> impl Fn(sqlx::Error) -> Error {
     move |e| Error::Storage(format!("{op}: {e}"))
@@ -861,6 +1073,22 @@ pub struct RevisionRecord {
 pub struct ContractPersistence {
     pub contract_ids: Vec<ContractId>,
     pub inserted: usize,
+}
+
+/// Result of assigning immutable scope inputs and supersession edges.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContractResolutionPersistence {
+    pub scope_assigned: bool,
+    pub supersessions_inserted: usize,
+}
+
+/// Reloaded durable inputs for deterministic applicability resolution.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredContractResolution {
+    pub contract_id: ContractId,
+    pub scope: ContractScope,
+    pub temporal: TemporalWindow,
+    pub supersedes: Vec<ContractId>,
 }
 
 /// Counts newly inserted candidate rows during an idempotent persistence call.
@@ -956,6 +1184,15 @@ struct ContractRow {
     start_offset: i64,
     end_offset: i64,
     exact_text_sha256: String,
+}
+
+#[derive(FromRow)]
+struct ContractResolutionRow {
+    target_id: String,
+    scope_resolved: i64,
+    scope_json: String,
+    valid_from_ms: Option<i64>,
+    valid_until_ms: Option<i64>,
 }
 
 impl ContractRow {
@@ -1783,6 +2020,173 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(count, 0, "the partial contract transaction rolled back");
+    }
+
+    #[tokio::test]
+    async fn contract_resolution_persists_reloads_and_fails_closed() {
+        use bar_contract::scope::{
+            resolve_applicability, ApplicabilityState, ScopeContext, ScopedContract,
+        };
+        use bar_contract::{extract_deterministic, ArtifactText};
+
+        let repo = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(repo.path()).unwrap();
+        let text = "The cache MUST retain entries.\nThe cache MUST NOT retain entries.";
+        write_file(&root, "README.md", text.as_bytes());
+        let (store, dir) = temp_store().await;
+        let target_id = store
+            .register_target(&tree_target(&root), T0)
+            .await
+            .unwrap()
+            .target_id;
+        let revision_id = store
+            .record_revision(&target_id, &revision("c", None), T0)
+            .await
+            .unwrap()
+            .revision_id;
+        let inventory = bar_discovery::scan(
+            &root,
+            &bar_discovery::ScanConfig::default(),
+            &PriorInventory::new(),
+        )
+        .unwrap();
+        store
+            .persist_inventory(&target_id, &revision_id, &inventory, T0)
+            .await
+            .unwrap();
+        let artifact = &inventory.artifacts[0];
+        let source = ArtifactText::new(
+            artifact.artifact_id(&revision_id),
+            &artifact.logical_path,
+            artifact.content_sha256.parse().unwrap(),
+            text,
+        )
+        .unwrap();
+        let claims = extract_deterministic(&source).unwrap();
+        let persisted = store
+            .persist_contracts(&target_id, &revision_id, &claims, T0 + 1)
+            .await
+            .unwrap();
+        let old_id = persisted.contract_ids[0];
+        let new_id = persisted.contract_ids[1];
+        let product_scope = ContractScope::default();
+        let deployment_scope = ContractScope {
+            deployments: vec!["prod-a".into()],
+            ..ContractScope::default()
+        };
+
+        let old = store
+            .assign_contract_resolution(&old_id, &product_scope, Some(10), Some(30), &[], T0 + 2)
+            .await
+            .unwrap();
+        assert!(old.scope_assigned);
+
+        let missing = ContractId::generate();
+        assert!(store
+            .assign_contract_resolution(
+                &new_id,
+                &deployment_scope,
+                Some(10),
+                Some(30),
+                &[missing],
+                T0 + 3,
+            )
+            .await
+            .is_err());
+        assert!(store.load_contract_resolution(&new_id).await.is_err());
+
+        let first = store
+            .assign_contract_resolution(
+                &new_id,
+                &deployment_scope,
+                Some(10),
+                Some(30),
+                &[old_id],
+                T0 + 4,
+            )
+            .await
+            .unwrap();
+        let replay = store
+            .assign_contract_resolution(
+                &new_id,
+                &deployment_scope,
+                Some(10),
+                Some(30),
+                &[old_id],
+                T0 + 5,
+            )
+            .await
+            .unwrap();
+        assert_eq!(first.supersessions_inserted, 1);
+        assert_eq!(
+            replay,
+            ContractResolutionPersistence {
+                scope_assigned: false,
+                supersessions_inserted: 0,
+            }
+        );
+
+        let url = format!("sqlite://{}", dir.path().join("bar.db").display());
+        let reopened = Store::connect(&url).await.unwrap();
+        reopened.migrate().await.unwrap();
+
+        let loaded_new = reopened.load_contract_resolution(&new_id).await.unwrap();
+        let loaded_old = reopened.load_contract_resolution(&old_id).await.unwrap();
+        assert_eq!(loaded_new.scope, deployment_scope);
+        assert_eq!(loaded_new.supersedes, [old_id]);
+        assert!(!loaded_new.temporal.superseded);
+        assert!(loaded_old.temporal.superseded);
+        assert_eq!(
+            resolve_applicability(
+                ScopedContract {
+                    scope: &loaded_new.scope,
+                    temporal: &loaded_new.temporal,
+                    normative_kind: claims[1].normative_kind,
+                },
+                &ScopeContext {
+                    deployment: Some("prod-a".into()),
+                    ..ScopeContext::default()
+                },
+                20,
+            )
+            .state,
+            ApplicabilityState::Applicable
+        );
+
+        let changed = ContractScope {
+            deployments: vec!["prod-b".into()],
+            ..ContractScope::default()
+        };
+        assert!(store
+            .assign_contract_resolution(&new_id, &changed, Some(10), Some(30), &[], T0 + 6,)
+            .await
+            .is_err());
+        assert_eq!(
+            store.load_contract_resolution(&new_id).await.unwrap().scope,
+            deployment_scope
+        );
+        assert!(store
+            .assign_contract_resolution(
+                &new_id,
+                &deployment_scope,
+                Some(u64::MAX),
+                None,
+                &[],
+                T0 + 7,
+            )
+            .await
+            .is_err());
+
+        let chain = store.load_audit_chain().await.unwrap();
+        chain.verify().unwrap();
+        assert_eq!(chain.len(), 9, "failed writes and replay emit no events");
+
+        sqlx::query("UPDATE contracts SET scope_json = '{\"unknown\":[]}' WHERE contract_id = ?")
+            .bind(new_id.to_string())
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        assert!(store.load_contract_resolution(&new_id).await.is_err());
     }
 
     #[tokio::test]
