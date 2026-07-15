@@ -34,9 +34,11 @@ use bar_target::{ConnectorKind, ResolvedTarget, RevisionIdentity, TargetStatus};
 use sqlx::sqlite::{Sqlite, SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
 use sqlx::{FromRow, Transaction};
 
+mod attestation;
 mod context_resolution;
 mod ruling;
 
+pub use attestation::{ScopeContextAttestationPersistence, StoredScopeContextAttestation};
 pub use ruling::{RulingPersistence, StoredContractRuling};
 
 /// A handle to the BAR relational store.
@@ -2784,7 +2786,7 @@ mod tests {
         let root = std::fs::canonicalize(repo.path()).unwrap();
         let text = "The cache MUST retain entries.";
         write_file(&root, "README.md", text.as_bytes());
-        let (store, _dir) = temp_store().await;
+        let (store, dir) = temp_store().await;
         let target_id = store
             .register_target(&tree_target(&root), T0)
             .await
@@ -2859,6 +2861,63 @@ mod tests {
                 .state,
             ApplicabilityState::Applicable
         );
+        assert!(store
+            .persist_scope_context_attestation(
+                &observed_during_validity.evidence_id,
+                " ",
+                "verified against the deployment manifest",
+                T0 + 16,
+            )
+            .await
+            .is_err());
+        let attestation = store
+            .persist_scope_context_attestation(
+                &observed_during_validity.evidence_id,
+                "operator/alice",
+                "verified against the deployment manifest",
+                T0 + 16,
+            )
+            .await
+            .unwrap();
+        let attestation_replay = store
+            .persist_scope_context_attestation(
+                &observed_during_validity.evidence_id,
+                "operator/alice",
+                "verified against the deployment manifest",
+                T0 + 17,
+            )
+            .await
+            .unwrap();
+        assert!(attestation.inserted);
+        assert_eq!(attestation_replay.evidence_id, attestation.evidence_id);
+        assert!(!attestation_replay.inserted);
+        let loaded_attestation = store
+            .load_scope_context_attestation(&attestation.evidence_id)
+            .await
+            .unwrap();
+        assert_eq!(
+            loaded_attestation.context_evidence_id,
+            observed_during_validity.evidence_id
+        );
+        assert_eq!(loaded_attestation.operator_id, "operator/alice");
+        let url = format!("sqlite://{}", dir.path().join("bar.db").display());
+        let reopened = Store::connect(&url).await.unwrap();
+        reopened.migrate().await.unwrap();
+        assert_eq!(
+            reopened
+                .load_scope_context_attestation(&attestation.evidence_id)
+                .await
+                .unwrap(),
+            loaded_attestation
+        );
+        assert_eq!(
+            store
+                .resolve_contract_in_attested_context(&contract_id, &attestation.evidence_id)
+                .await
+                .unwrap()
+                .state,
+            ApplicabilityState::Applicable
+        );
         let observed_after_expiry = store
             .persist_scope_context_evidence(
                 &target_id,
@@ -2919,10 +2978,35 @@ mod tests {
             )
             .await
             .unwrap();
+        let other_attestation = store
+            .persist_scope_context_attestation(
+                &other_context.evidence_id,
+                "operator/alice",
+                "verified against the other deployment manifest",
+                T0 + 16,
+            )
+            .await
+            .unwrap();
         assert!(store
             .resolve_contract_in_context(&contract_id, &other_context.evidence_id)
             .await
             .is_err());
+        assert!(store
+            .resolve_contract_in_attested_context(&contract_id, &other_attestation.evidence_id)
+            .await
+            .is_err());
+
+        sqlx::query("UPDATE scope_context_attestations SET rationale = ' ' WHERE evidence_id = ?")
+            .bind(attestation.evidence_id.to_string())
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        assert!(store
+            .load_scope_context_attestation(&attestation.evidence_id)
+            .await
+            .is_err());
+        let chain = store.load_audit_chain().await.unwrap();
+        chain.verify().unwrap();
     }
 
     #[tokio::test]

@@ -12,9 +12,9 @@ result.
 > states, inclusive validity windows, documented scope precedence, and mandatory
 > adjudication for ties or unknown context. Scope, validity, supersession, and
 > evidence-bound operator rulings now persist transactionally and reload;
-> contextual applicability remains derived at the evidence observation time.
-> Phase 3 extraction is implementation complete and pending human review. Build
-> progresses through
+> contextual applicability remains derived at the evidence observation time,
+> with an explicit operator-attested trust path. Phase 3 extraction is
+> implementation complete and pending human review. Build progresses through
 > the phased manual in [`docs/spec.md`](docs/spec.md) §21. See [`STATUS.md`](STATUS.md)
 > for the current state and remaining Phase 4 work.
 
