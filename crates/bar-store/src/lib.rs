@@ -2263,6 +2263,7 @@ mod tests {
         let product_scope = ContractScope::default();
         let deployment_scope = ContractScope {
             deployments: vec!["prod-a".into()],
+            source_revision_range: Some(">=1.0.0 <2.0.0".into()),
             ..ContractScope::default()
         };
 
@@ -2336,6 +2337,7 @@ mod tests {
                 },
                 &ScopeContext {
                     deployment: Some("prod-a".into()),
+                    source_revision: Some("1.5.0".into()),
                     ..ScopeContext::default()
                 },
                 20,

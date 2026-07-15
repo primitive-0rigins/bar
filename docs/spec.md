@@ -291,11 +291,14 @@ conditions\[\]
 required_behavior?  
 prohibited_behavior\[\]  
 scope {  
+deployments\[\]<br>
+configurations\[\]<br>
 components\[\]  
 environments\[\]  
 modes\[\]  
 feature_flags\[\]  
 tenant_scope?  
+source_revisions\[\]<br>
 source_revision_range?  
 deployment_range?  
 }  
@@ -324,6 +327,20 @@ analysis_versions
 5\. Product-wide contract.
 
 6\. Historical, planned, example, and superseded text never override active normative contracts.
+
+### 7.2.1 Semantic version ranges
+
+- `source_revisions` and `deployments` remain exact identifiers. Their optional
+  `source_revision_range` and `deployment_range` fields use BAR's strict
+  release-version grammar: `MAJOR.MINOR.PATCH` with no leading zeroes, pre-release
+  suffixes, build metadata, wildcards, caret, or tilde syntax.
+- A range is one or more whitespace-separated comparator terms that all must
+  match: a bare version or `=`, `>`, `>=`, `<`, or `<=` followed by a release
+  version. For example: `>=1.2.3 <2.0.0`.
+- A version range is version-bounded scope only with a declared component. A
+  range without a component may match, but has no automatic precedence tier.
+- Invalid declared ranges and unparseable observed versions resolve as
+  ambiguous; BAR never guesses SemVer semantics.
 
 ## 7.3 Contract hierarchy rules
 

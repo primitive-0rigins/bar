@@ -165,6 +165,50 @@
       "expected": "adjudication_required"
     },
     {
+      "name": "source_revision_range_with_component_overrides_product_rule",
+      "left": {
+        "scope": {
+          "components": ["api"],
+          "source_revision_range": ">=1.2.3 <2.0.0"
+        },
+        "temporal": {},
+        "normative_kind": "required"
+      },
+      "right": {
+        "scope": {},
+        "temporal": {},
+        "normative_kind": "prohibited"
+      },
+      "context": {
+        "component": "api",
+        "source_revision": "1.8.0"
+      },
+      "at_ms": 100,
+      "expected": "scoped_override_left"
+    },
+    {
+      "name": "unparseable_revision_never_satisfies_semantic_range",
+      "left": {
+        "scope": {
+          "components": ["api"],
+          "source_revision_range": ">=1.2.3 <2.0.0"
+        },
+        "temporal": {},
+        "normative_kind": "required"
+      },
+      "right": {
+        "scope": {},
+        "temporal": {},
+        "normative_kind": "prohibited"
+      },
+      "context": {
+        "component": "api",
+        "source_revision": "commit-a"
+      },
+      "at_ms": 100,
+      "expected": "adjudication_required"
+    },
+    {
       "name": "historical_contract_never_overrides_active_contract",
       "left": {
         "scope": {},

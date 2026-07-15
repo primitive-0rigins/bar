@@ -70,6 +70,10 @@ pub struct ContractScope {
     pub feature_flags: Vec<String>,
     pub modes: Vec<String>,
     pub source_revisions: Vec<String>,
+    /// A strict semantic-version intersection for `source_revision`.
+    pub source_revision_range: Option<String>,
+    /// A strict semantic-version intersection for `deployment`.
+    pub deployment_range: Option<String>,
     pub tenant_scope: Option<String>,
 }
 
@@ -270,12 +274,20 @@ enum DimensionMatch {
 fn match_scope(scope: &ContractScope, context: &ScopeContext) -> DimensionMatch {
     let mut result = DimensionMatch::Matches;
     for dimension in [
-        match_values(&scope.deployments, context.deployment.as_deref()),
+        match_versioned_values(
+            &scope.deployments,
+            scope.deployment_range.as_deref(),
+            context.deployment.as_deref(),
+        ),
         match_values(&scope.configurations, context.configuration.as_deref()),
         match_values(&scope.environments, context.environment.as_deref()),
         match_values(&scope.components, context.component.as_deref()),
         match_values(&scope.modes, context.mode.as_deref()),
-        match_values(&scope.source_revisions, context.source_revision.as_deref()),
+        match_versioned_values(
+            &scope.source_revisions,
+            scope.source_revision_range.as_deref(),
+            context.source_revision.as_deref(),
+        ),
         match_value(
             scope.tenant_scope.as_deref(),
             context.tenant_scope.as_deref(),
@@ -304,6 +316,138 @@ fn match_values(expected: &[String], actual: Option<&str>) -> DimensionMatch {
     } else {
         DimensionMatch::Unknown
     }
+}
+
+/// Matches exact identities and an optional semantic-version range. A malformed
+/// observed version is unknown, not a mismatch, so it cannot select a scoped
+/// contract automatically.
+fn match_versioned_values(
+    exact: &[String],
+    range: Option<&str>,
+    actual: Option<&str>,
+) -> DimensionMatch {
+    if exact.is_empty() && range.is_none() {
+        return DimensionMatch::Matches;
+    }
+    let Some(actual) = actual else {
+        return DimensionMatch::Unknown;
+    };
+    if exact.iter().any(|value| value == actual) {
+        return DimensionMatch::Matches;
+    }
+    let Some(range) = range else {
+        return DimensionMatch::Mismatch;
+    };
+    let Ok(actual) = parse_release_version(actual) else {
+        return DimensionMatch::Unknown;
+    };
+    match parse_version_range(range) {
+        Ok(comparators)
+            if comparators
+                .iter()
+                .all(|comparator| comparator.matches(actual)) =>
+        {
+            DimensionMatch::Matches
+        }
+        Ok(_) => DimensionMatch::Mismatch,
+        Err(()) => DimensionMatch::Unknown,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct ReleaseVersion {
+    major: u64,
+    minor: u64,
+    patch: u64,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum VersionComparator {
+    Equal(ReleaseVersion),
+    GreaterThan(ReleaseVersion),
+    GreaterOrEqual(ReleaseVersion),
+    LessThan(ReleaseVersion),
+    LessOrEqual(ReleaseVersion),
+}
+
+impl VersionComparator {
+    fn matches(self, actual: ReleaseVersion) -> bool {
+        match self {
+            Self::Equal(expected) => actual == expected,
+            Self::GreaterThan(expected) => actual > expected,
+            Self::GreaterOrEqual(expected) => actual >= expected,
+            Self::LessThan(expected) => actual < expected,
+            Self::LessOrEqual(expected) => actual <= expected,
+        }
+    }
+}
+
+/// Parses BAR's deliberately narrow semantic-version grammar: a release
+/// version is `MAJOR.MINOR.PATCH` and a range is one or more whitespace-
+/// separated `=`, `>`, `>=`, `<`, or `<=` comparators that all must match.
+fn parse_version_range(input: &str) -> core::result::Result<Vec<VersionComparator>, ()> {
+    if input.is_empty() || input.len() > 512 {
+        return Err(());
+    }
+    let comparators = input
+        .split_ascii_whitespace()
+        .map(parse_version_comparator)
+        .collect::<core::result::Result<Vec<_>, _>>()?;
+    if comparators.is_empty() {
+        return Err(());
+    }
+    Ok(comparators)
+}
+
+fn valid_version_range(input: &str) -> bool {
+    parse_version_range(input).is_ok()
+}
+
+fn parse_version_comparator(input: &str) -> core::result::Result<VersionComparator, ()> {
+    let (operator, version) = if let Some(version) = input.strip_prefix(">=") {
+        (">=", version)
+    } else if let Some(version) = input.strip_prefix("<=") {
+        ("<=", version)
+    } else if let Some(version) = input.strip_prefix('>') {
+        (">", version)
+    } else if let Some(version) = input.strip_prefix('<') {
+        ("<", version)
+    } else if let Some(version) = input.strip_prefix('=') {
+        ("=", version)
+    } else {
+        ("=", input)
+    };
+    let version = parse_release_version(version)?;
+    Ok(match operator {
+        "=" => VersionComparator::Equal(version),
+        ">" => VersionComparator::GreaterThan(version),
+        ">=" => VersionComparator::GreaterOrEqual(version),
+        "<" => VersionComparator::LessThan(version),
+        "<=" => VersionComparator::LessOrEqual(version),
+        _ => return Err(()),
+    })
+}
+
+fn parse_release_version(input: &str) -> core::result::Result<ReleaseVersion, ()> {
+    let mut parts = input.split('.');
+    let major = parse_version_number(parts.next().ok_or(())?)?;
+    let minor = parse_version_number(parts.next().ok_or(())?)?;
+    let patch = parse_version_number(parts.next().ok_or(())?)?;
+    if parts.next().is_some() {
+        return Err(());
+    }
+    Ok(ReleaseVersion {
+        major,
+        minor,
+        patch,
+    })
+}
+
+fn parse_version_number(input: &str) -> core::result::Result<u64, ()> {
+    if input.is_empty() || (input.len() > 1 && input.starts_with('0')) {
+        return Err(());
+    }
+    input.parse().map_err(|_| ())
 }
 
 fn match_value(expected: Option<&str>, actual: Option<&str>) -> DimensionMatch {
@@ -336,11 +480,17 @@ fn scope_specificity(scope: &ContractScope) -> Option<ScopeSpecificity> {
         Some(ScopeSpecificity::ExactEnvironmentComponent)
     } else if !scope.feature_flags.is_empty() || !scope.modes.is_empty() {
         Some(ScopeSpecificity::FeatureFlagMode)
-    } else if !scope.source_revisions.is_empty() && !scope.components.is_empty() {
+    } else if (!scope.source_revisions.is_empty()
+        || scope.source_revision_range.is_some()
+        || scope.deployment_range.is_some())
+        && !scope.components.is_empty()
+    {
         Some(ScopeSpecificity::VersionBoundedComponent)
     } else if scope.environments.is_empty()
         && scope.components.is_empty()
         && scope.source_revisions.is_empty()
+        && scope.source_revision_range.is_none()
+        && scope.deployment_range.is_none()
         && scope.tenant_scope.is_none()
     {
         Some(ScopeSpecificity::ProductWide)
@@ -366,6 +516,14 @@ fn scope_is_valid(scope: &ContractScope) -> bool {
             .tenant_scope
             .as_deref()
             .is_none_or(|value| !value.trim().is_empty())
+        && scope
+            .source_revision_range
+            .as_deref()
+            .is_none_or(valid_version_range)
+        && scope
+            .deployment_range
+            .as_deref()
+            .is_none_or(valid_version_range)
 }
 
 #[cfg(test)]
@@ -701,5 +859,86 @@ mod tests {
             ..ContractScope::default()
         };
         assert_eq!(scope_specificity(&incomplete), None);
+    }
+
+    #[test]
+    fn semantic_version_ranges_are_strict_and_fail_safe() {
+        let scope = ContractScope {
+            components: vec!["api".into()],
+            source_revision_range: Some(">=1.2.3 <2.0.0".into()),
+            ..ContractScope::default()
+        };
+        let active = TemporalWindow::default();
+        assert_eq!(
+            resolve_applicability(
+                required(&scope, &active),
+                &ScopeContext {
+                    component: Some("api".into()),
+                    source_revision: Some("1.8.0".into()),
+                    ..ScopeContext::default()
+                },
+                1,
+            ),
+            Applicability {
+                state: ApplicabilityState::Applicable,
+                specificity: Some(ScopeSpecificity::VersionBoundedComponent),
+            }
+        );
+        assert_eq!(
+            resolve_applicability(
+                required(&scope, &active),
+                &ScopeContext {
+                    component: Some("api".into()),
+                    source_revision: Some("2.0.0".into()),
+                    ..ScopeContext::default()
+                },
+                1,
+            )
+            .state,
+            ApplicabilityState::NotApplicable
+        );
+        assert_eq!(
+            resolve_applicability(
+                required(&scope, &active),
+                &ScopeContext {
+                    component: Some("api".into()),
+                    source_revision: Some("commit-a".into()),
+                    ..ScopeContext::default()
+                },
+                1,
+            )
+            .state,
+            ApplicabilityState::Ambiguous
+        );
+
+        let deployment_range = ContractScope {
+            components: vec!["api".into()],
+            deployment_range: Some(">=2.0.0 <3.0.0".into()),
+            ..ContractScope::default()
+        };
+        assert_eq!(
+            resolve_applicability(
+                required(&deployment_range, &active),
+                &ScopeContext {
+                    component: Some("api".into()),
+                    deployment: Some("2.4.1".into()),
+                    ..ScopeContext::default()
+                },
+                1,
+            )
+            .state,
+            ApplicabilityState::Applicable
+        );
+        for invalid in ["^1.2.3", "1.2", "1.02.3", ">=1.0.0, <2.0.0", " "] {
+            assert!(validate_declaration(
+                &ContractScope {
+                    source_revision_range: Some(invalid.into()),
+                    ..ContractScope::default()
+                },
+                None,
+                None,
+            )
+            .is_err());
+        }
     }
 }
