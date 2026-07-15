@@ -197,7 +197,11 @@ pub fn analyze_document(artifact: &ArtifactText) -> Result<DocumentAnalysis> {
         if looks_like_prompt_injection(exact) {
             continue;
         }
-        let normalized = normalize_whitespace(exact);
+        let normalized = if segment.blockquote {
+            normalize_blockquote(exact)
+        } else {
+            normalize_whitespace(exact)
+        };
         if let Some((canonical, definition, aliases)) = parse_glossary(&normalized) {
             glossary.push(GlossaryCandidate {
                 canonical,
@@ -259,6 +263,7 @@ struct Segment {
     start: usize,
     end: usize,
     heading: Option<HeadingContext>,
+    blockquote: bool,
 }
 
 #[derive(Debug)]
@@ -278,6 +283,7 @@ struct OpenComment {
 fn segment_document(artifact: &ArtifactText) -> Vec<Segment> {
     let mut segments = Vec::new();
     let mut paragraph = None;
+    let mut blockquote = None;
     let mut comment: Option<OpenComment> = None;
     let mut heading = None;
     let mut fence = None;
@@ -296,6 +302,7 @@ fn segment_document(artifact: &ArtifactText) -> Vec<Segment> {
                     open.start,
                     line_start + closing_start,
                     open.heading,
+                    false,
                 );
             } else {
                 comment = Some(open);
@@ -320,9 +327,15 @@ fn segment_document(artifact: &ArtifactText) -> Vec<Segment> {
         }
         if let Some(marker) = fence_marker {
             flush_paragraph(&mut segments, &mut paragraph, &artifact.text);
+            flush_blockquote(&mut segments, &mut blockquote, &artifact.text);
             fence = Some(marker);
             line_start += line.len();
             continue;
+        }
+
+        let blockquote_line = blockquote_segment(trimmed);
+        if blockquote_line.is_none() {
+            flush_blockquote(&mut segments, &mut blockquote, &artifact.text);
         }
 
         if trimmed.is_empty() {
@@ -346,6 +359,7 @@ fn segment_document(artifact: &ArtifactText) -> Vec<Segment> {
                     start,
                     start + closing_start,
                     heading.clone(),
+                    false,
                 );
             } else {
                 comment = Some(OpenComment {
@@ -354,14 +368,20 @@ fn segment_document(artifact: &ArtifactText) -> Vec<Segment> {
                     heading: heading.clone(),
                 });
             }
-        } else if let Some((quote_start, quote)) = blockquote_segment(trimmed) {
+        } else if let Some((quote_start, quote)) = blockquote_line {
             flush_paragraph(&mut segments, &mut paragraph, &artifact.text);
             let start = line_start + trim_start + quote_start;
-            segments.push(Segment {
-                start,
-                end: start + quote.len(),
-                heading: heading.clone(),
-            });
+            let end = start + quote.len();
+            match &mut blockquote {
+                Some(open) => open.end = end,
+                None => {
+                    blockquote = Some(OpenParagraph {
+                        start,
+                        end,
+                        heading: heading.clone(),
+                    });
+                }
+            }
         } else if is_table_row(trimmed) {
             flush_paragraph(&mut segments, &mut paragraph, &artifact.text);
             if !is_table_separator(trimmed) {
@@ -379,6 +399,7 @@ fn segment_document(artifact: &ArtifactText) -> Vec<Segment> {
                 start,
                 end: start + item.len(),
                 heading: heading.clone(),
+                blockquote: false,
             });
         } else if let Some((comment_start, comment)) = line_comment_segment(trimmed) {
             flush_paragraph(&mut segments, &mut paragraph, &artifact.text);
@@ -387,6 +408,7 @@ fn segment_document(artifact: &ArtifactText) -> Vec<Segment> {
                 start,
                 end: start + comment.len(),
                 heading: heading.clone(),
+                blockquote: false,
             });
         } else {
             let start = line_start + trim_start;
@@ -406,6 +428,7 @@ fn segment_document(artifact: &ArtifactText) -> Vec<Segment> {
         line_start += line.len();
     }
     flush_paragraph(&mut segments, &mut paragraph, &artifact.text);
+    flush_blockquote(&mut segments, &mut blockquote, &artifact.text);
     segments
 }
 
@@ -415,7 +438,24 @@ fn flush_paragraph(
     document: &str,
 ) {
     if let Some(open) = paragraph.take() {
-        push_prose_segments(segments, document, open.start, open.end, open.heading);
+        push_prose_segments(
+            segments,
+            document,
+            open.start,
+            open.end,
+            open.heading,
+            false,
+        );
+    }
+}
+
+fn flush_blockquote(
+    segments: &mut Vec<Segment>,
+    blockquote: &mut Option<OpenParagraph>,
+    document: &str,
+) {
+    if let Some(open) = blockquote.take() {
+        push_prose_segments(segments, document, open.start, open.end, open.heading, true);
     }
 }
 
@@ -425,6 +465,7 @@ fn push_prose_segments(
     start: usize,
     end: usize,
     heading: Option<HeadingContext>,
+    blockquote: bool,
 ) {
     let text = &document[start..end];
     let mut sentence_start = 0;
@@ -441,11 +482,19 @@ fn push_prose_segments(
                 start + sentence_start,
                 start + index + ch.len_utf8(),
                 heading.clone(),
+                blockquote,
             );
             sentence_start = index + ch.len_utf8();
         }
     }
-    push_sentence(segments, document, start + sentence_start, end, heading);
+    push_sentence(
+        segments,
+        document,
+        start + sentence_start,
+        end,
+        heading,
+        blockquote,
+    );
 }
 
 fn push_sentence(
@@ -454,6 +503,7 @@ fn push_sentence(
     start: usize,
     end: usize,
     heading: Option<HeadingContext>,
+    blockquote: bool,
 ) {
     let text = &document[start..end];
     let (trim_start, trim_end) = trimmed_bounds(text);
@@ -462,6 +512,7 @@ fn push_sentence(
             start: start + trim_start,
             end: start + trim_end,
             heading,
+            blockquote,
         });
     }
 }
@@ -506,6 +557,23 @@ fn blockquote_segment(text: &str) -> Option<(usize, &str)> {
     }
     let value = rest.trim_end();
     (found && !value.is_empty()).then_some((offset, value))
+}
+
+fn normalize_blockquote(text: &str) -> String {
+    let mut normalized = String::new();
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        let content = blockquote_segment(trimmed)
+            .map(|(_, content)| content)
+            .unwrap_or(trimmed);
+        for word in content.split_whitespace() {
+            if !normalized.is_empty() {
+                normalized.push(' ');
+            }
+            normalized.push_str(word);
+        }
+    }
+    normalized
 }
 
 fn line_comment_segment(text: &str) -> Option<(usize, &str)> {
@@ -563,6 +631,7 @@ fn push_table_cells(
                 start: row_start + raw_start + trim_start,
                 end: row_start + raw_start + trim_end,
                 heading: heading.clone(),
+                blockquote: false,
             });
         }
     }
@@ -1040,6 +1109,33 @@ mod tests {
             .hierarchy
             .iter()
             .all(|candidate| candidate.heading == "Policy"));
+    }
+
+    #[test]
+    fn consecutive_blockquote_lines_form_source_bound_paragraphs() {
+        let text = "# Runtime\n\n> The daemon MUST\n> remain model-optional.\n\n> Workers should stop promptly.\n";
+        let analysis = analyze_document(&artifact(text)).unwrap();
+
+        assert_eq!(analysis.claims.len(), 2);
+        assert_eq!(
+            analysis.claims[0].statement,
+            "The daemon MUST remain model-optional."
+        );
+        assert_eq!(
+            analysis.claims[1].statement,
+            "Workers should stop promptly."
+        );
+        let exact =
+            &text[analysis.claims[0].source.start_offset..analysis.claims[0].source.end_offset];
+        assert_eq!(exact, "The daemon MUST\n> remain model-optional.");
+        assert_eq!(
+            digest(exact.as_bytes()),
+            analysis.claims[0].source.exact_text_sha256
+        );
+        assert!(analysis
+            .hierarchy
+            .iter()
+            .all(|candidate| candidate.heading == "Runtime"));
     }
 
     #[test]
