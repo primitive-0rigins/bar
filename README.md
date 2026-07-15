@@ -8,8 +8,9 @@ connected coding agent, and then independently verifies the result.
 
 > **Status:** Phase 3 — contract extraction shadow, in progress. Deterministic
 > source-bound claim extraction, cross-artifact hierarchy/glossary/conflict
-> candidate analysis, strict optional-model output validation, and idempotent
-> durable candidate persistence are in place and green. Build progresses through
+> candidate analysis, strict optional-model output validation, honest
+> disabled/unavailable model state, and idempotent durable candidate persistence
+> are in place and green. Build progresses through
 > the phased manual in [`docs/spec.md`](docs/spec.md) §21. See [`STATUS.md`](STATUS.md)
 > for the current state and remaining Phase 3 work.
 

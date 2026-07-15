@@ -46,6 +46,11 @@ conflict candidates, and treats optional-model output as untrusted data.
   paragraph before sentence segmentation, so a marker cannot hide in a prior
   sentence while a following command becomes a claim. The deterministic path
   remains independent of a model.
+- `bar-daemon` exposes a closed optional-model readiness state. Default policy
+  reports `disabled`; enabling models in this adapter-free build reports
+  `unavailable`, emits a warning without provider/endpoint details, and still
+  completes deterministic startup. It never reports configured intent as an
+  available capability.
 - `bar-store`: migration `0005` adds revision-scoped `contracts` and mandatory
   `contract_sources`. Persistence is fingerprint-idempotent and records
   each newly extracted contract as an audited evidence mutation in the same
@@ -66,10 +71,10 @@ conflict candidates, and treats optional-model output as untrusted data.
 
 The implemented slice passes the two Phase 3 safety invariants: every emitted
 claim cites verified source bytes, and malformed or source-inconsistent model
-output is rejected. The full phase is not complete. All 94 repository tests
+output is rejected. The full phase is not complete. All 95 repository tests
 pass; clippy `-D warnings` and fmt are clean. Implementation revisions:
-`3fb0fc6`, `74e1408`, `85fff4d`, `b483f02`, `3ca47dc`, `c5959d1`, and
-`3238221`.
+`3fb0fc6`, `74e1408`, `85fff4d`, `b483f02`, `3ca47dc`, `c5959d1`,
+`3238221`, and `502037f`.
 
 ### Remaining before Phase 3 completion
 
@@ -80,8 +85,9 @@ pass; clippy `-D warnings` and fmt are clean. Implementation revisions:
   explicit definitions and no terms are merged automatically.
 - Scope- and temporal-aware conflict generation; direct cross-artifact
   required/prohibited opposites are now durable candidates.
-- Optional worker integration and its explicit disabled/unavailable runtime
-  state; current code validates bounded output but invokes no model.
+- Optional worker adapter invocation, isolation, and resource-pressure
+  suspension; current code validates bounded output and reports unavailable
+  honestly but invokes no model.
 - Phase 3 completion evidence after the remaining capabilities and human review.
 
 ## Phase 2 — Artifact discovery (implementation complete)
