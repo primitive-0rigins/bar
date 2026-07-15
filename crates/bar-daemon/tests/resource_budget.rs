@@ -42,6 +42,7 @@ fn daemon_boots_model_free_within_resource_budget() {
         readiness["fields"]["models_enabled"], false,
         "daemon must start model-free under default config",
     );
+    assert_eq!(readiness["fields"]["model_state"], "disabled");
 
     // `peak_rss_bytes` is absent on platforms without /proc; there the RSS
     // assertion is skipped (model-free boot is still asserted above).
@@ -52,6 +53,38 @@ fn daemon_boots_model_free_within_resource_budget() {
              (spec §4); a resident model or leak at startup would cause this",
         );
     }
+}
+
+#[test]
+fn enabled_model_without_adapter_reports_unavailable_and_does_not_block_startup() {
+    let config_path =
+        std::env::temp_dir().join(format!("bar-model-unavailable-{}.toml", std::process::id()));
+    std::fs::write(
+        &config_path,
+        "[models]\nenabled = true\nprovider = \"local\"\n",
+    )
+    .expect("write test config");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_bar-daemon"))
+        .env("BAR_CONFIG", &config_path)
+        .env("BAR_LOG_FORMAT", "json")
+        .env("BAR_LOG", "info")
+        .output()
+        .expect("spawn bar-daemon");
+    std::fs::remove_file(&config_path).expect("remove test config");
+
+    assert!(
+        output.status.success(),
+        "unavailable optional model blocked startup: {}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let readiness = readiness_event(&output.stdout);
+    assert_eq!(readiness["fields"]["models_enabled"], true);
+    assert_eq!(readiness["fields"]["model_state"], "unavailable");
+    assert!(
+        !String::from_utf8_lossy(&output.stdout).contains("local"),
+        "provider configuration must not be emitted in startup logs"
+    );
 }
 
 /// Extracts the `"bar-daemon initialized"` readiness event from the daemon's

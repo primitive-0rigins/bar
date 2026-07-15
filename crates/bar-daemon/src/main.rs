@@ -13,6 +13,29 @@ use std::process::ExitCode;
 use bar_config::Config;
 use bar_core::Result;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ModelRuntimeState {
+    Disabled,
+    Unavailable,
+}
+
+impl ModelRuntimeState {
+    fn from_config(config: &Config) -> Self {
+        if config.models.enabled {
+            Self::Unavailable
+        } else {
+            Self::Disabled
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::Unavailable => "unavailable",
+        }
+    }
+}
+
 fn main() -> ExitCode {
     init_logging();
     match run() {
@@ -26,12 +49,18 @@ fn main() -> ExitCode {
 
 fn run() -> Result<()> {
     let (config, source) = load_config()?;
+    let model_state = ModelRuntimeState::from_config(&config);
 
     // Hard invariant (spec §3.1): BAR does not require a model to start.
-    if config.models.enabled {
-        tracing::info!("model support enabled by configuration");
-    } else {
-        tracing::info!("model support disabled; running model-free");
+    match model_state {
+        ModelRuntimeState::Disabled => {
+            tracing::info!("model support disabled; running model-free");
+        }
+        ModelRuntimeState::Unavailable => {
+            tracing::warn!(
+                "optional model configured but no adapter is available; running model-free"
+            );
+        }
     }
 
     // Report the model-free boot footprint (spec §4). The resource benchmark
@@ -43,6 +72,7 @@ fn run() -> Result<()> {
             config_source = %source,
             listen = %config.server.listen,
             models_enabled = config.models.enabled,
+            model_state = model_state.as_str(),
             gpu_enabled = config.resources.gpu_enabled,
             peak_rss_bytes,
             "bar-daemon initialized"
@@ -51,6 +81,7 @@ fn run() -> Result<()> {
             config_source = %source,
             listen = %config.server.listen,
             models_enabled = config.models.enabled,
+            model_state = model_state.as_str(),
             gpu_enabled = config.resources.gpu_enabled,
             "bar-daemon initialized"
         ),
