@@ -43,17 +43,10 @@ impl Store {
         validate_attestation_text(operator_id, MAX_OPERATOR_ID_BYTES, "operator id")?;
         validate_attestation_text(rationale, MAX_RATIONALE_BYTES, "rationale")?;
         let created_at = required_sqlite_u64(now_ms, "attestation timestamp")?;
+        let context = self
+            .load_scope_context_evidence(context_evidence_id)
+            .await?;
         let mut tx = self.pool.begin().await.map_err(storage("begin"))?;
-        let context: Option<(String, String)> = sqlx::query_as(
-            "SELECT target_id, revision_id FROM scope_context_evidence WHERE evidence_id = ?",
-        )
-        .bind(context_evidence_id.to_string())
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(storage("load attested scope context"))?;
-        let (target_id, revision_id) = context.ok_or_else(|| {
-            Error::Corrupt(format!("unknown scope context {context_evidence_id}"))
-        })?;
         let existing: Option<String> = sqlx::query_scalar(
             "SELECT evidence_id FROM scope_context_attestations \
              WHERE context_evidence_id = ? AND operator_id = ? AND rationale = ?",
@@ -80,8 +73,8 @@ impl Store {
         )
         .bind(evidence_id.to_string())
         .bind(context_evidence_id.to_string())
-        .bind(&target_id)
-        .bind(&revision_id)
+        .bind(context.target_id.to_string())
+        .bind(context.revision_id.to_string())
         .bind(operator_id)
         .bind(rationale)
         .bind(created_at)

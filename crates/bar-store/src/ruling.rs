@@ -138,20 +138,15 @@ impl Store {
             operator_id: ruling.operator_id.clone(),
             created_at_ms: created_at,
         };
-        let mut tx = self.pool.begin().await.map_err(storage("begin"))?;
-
-        let evidence_target: Option<String> = sqlx::query_scalar(
-            "SELECT target_id FROM scope_context_evidence WHERE evidence_id = ?",
-        )
-        .bind(context_evidence_id.to_string())
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(storage("load ruling context evidence"))?;
-        if evidence_target.as_deref() != Some(target_key.as_str()) {
+        let context = self
+            .load_scope_context_evidence(context_evidence_id)
+            .await?;
+        if context.target_id != *target_id {
             return Err(Error::Corrupt(format!(
-                "ruling context {context_evidence_id} is missing or belongs to another target"
+                "ruling context {context_evidence_id} belongs to another target"
             )));
         }
+        let mut tx = self.pool.begin().await.map_err(storage("begin"))?;
         for contract_id in &contract_refs {
             let contract_target: Option<String> =
                 sqlx::query_scalar("SELECT target_id FROM contracts WHERE contract_id = ?")
@@ -331,14 +326,11 @@ impl Store {
                 "persisted ruling contract references disagree".into(),
             ));
         }
-        let evidence_target: Option<String> = sqlx::query_scalar(
-            "SELECT target_id FROM scope_context_evidence WHERE evidence_id = ?",
-        )
-        .bind(&row.context_evidence_id)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(storage("validate ruling context target"))?;
-        if evidence_target.as_deref() != Some(row.target_id.as_str()) {
+        let context_evidence_id: EvidenceId = row.context_evidence_id.parse()?;
+        let context = self
+            .load_scope_context_evidence(&context_evidence_id)
+            .await?;
+        if context.target_id.to_string() != row.target_id {
             return Err(Error::Corrupt(
                 "persisted ruling context belongs to another target".into(),
             ));

@@ -2545,6 +2545,16 @@ mod tests {
             .load_scope_context_evidence(&first.evidence_id)
             .await
             .is_err());
+        assert!(store
+            .persist_scope_context_attestation(
+                &first.evidence_id,
+                "operator/alice",
+                "verified against the deployment manifest",
+                T0 + 2,
+            )
+            .await
+            .is_err());
+        assert_eq!(store.load_audit_chain().await.unwrap().len(), 5);
     }
 
     #[tokio::test]
@@ -2956,6 +2966,34 @@ mod tests {
                 .count(),
             4,
             "reuse, replay, and failed writes emit no ruling events"
+        );
+
+        sqlx::query(
+            "UPDATE scope_context_evidence SET context_json = '{\"unknown\":true}' \
+             WHERE evidence_id = ?",
+        )
+        .bind(context.evidence_id.to_string())
+        .execute(&store.pool)
+        .await
+        .unwrap();
+        assert!(store
+            .persist_contract_ruling(&target_id, &context.evidence_id, &renewal, None, T0 + 102)
+            .await
+            .is_err());
+        assert!(reopened
+            .load_contract_ruling(&second.ruling_id)
+            .await
+            .is_err());
+        assert_eq!(
+            store
+                .load_audit_chain()
+                .await
+                .unwrap()
+                .records()
+                .iter()
+                .filter(|record| record.event.category == AuditCategory::Ruling)
+                .count(),
+            4
         );
 
         sqlx::query("UPDATE contract_rulings SET contract_refs_json = '[]' WHERE ruling_id = ?")
