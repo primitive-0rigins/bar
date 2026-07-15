@@ -42,8 +42,10 @@ conflict candidates, and treats optional-model output as untrusted data.
   output/claim counts, closed normative/level vocabularies, UTF-8-safe offsets,
   exact-text hashes, and statement-to-source equality. Malformed JSON,
   fabricated statements, unknown fields/tokens, invalid spans, and known prompt
-  injection markers are rejected. The deterministic path remains independent
-  of a model.
+  injection markers are rejected. Injection taint applies to the complete
+  paragraph before sentence segmentation, so a marker cannot hide in a prior
+  sentence while a following command becomes a claim. The deterministic path
+  remains independent of a model.
 - `bar-store`: migration `0005` adds revision-scoped `contracts` and mandatory
   `contract_sources`. Persistence is fingerprint-idempotent and records
   each newly extracted contract as an audited evidence mutation in the same
@@ -55,12 +57,19 @@ conflict candidates, and treats optional-model output as untrusted data.
   audits newly detected conflicts atomically. Reload rejects corrupt aliases,
   spans, hashes, heading levels, and unknown conflict states; glossary
   ambiguities are reconstructed from the preserved definitions.
+- The versioned `fixtures/phase-3-contract-corpus` golden corpus drives real
+  discovery, deterministic analysis, contract/candidate persistence, and
+  reload against hand-authored expected output. It covers fenced examples,
+  cross-sentence prompt injection, multiline blockquotes, glossary ambiguity,
+  and cross-document conflict; conflict pairs are fingerprint-canonical across
+  persistence round trips.
 
 The implemented slice passes the two Phase 3 safety invariants: every emitted
 claim cites verified source bytes, and malformed or source-inconsistent model
-output is rejected. The full phase is not complete. All 93 repository tests
+output is rejected. The full phase is not complete. All 94 repository tests
 pass; clippy `-D warnings` and fmt are clean. Implementation revisions:
-`3fb0fc6`, `74e1408`, `85fff4d`, `b483f02`, `3ca47dc`, and `c5959d1`.
+`3fb0fc6`, `74e1408`, `85fff4d`, `b483f02`, `3ca47dc`, `c5959d1`, and
+`3238221`.
 
 ### Remaining before Phase 3 completion
 
@@ -73,7 +82,7 @@ pass; clippy `-D warnings` and fmt are clean. Implementation revisions:
   required/prohibited opposites are now durable candidates.
 - Optional worker integration and its explicit disabled/unavailable runtime
   state; current code validates bounded output but invokes no model.
-- Canonical fixture/golden-corpus coverage and Phase 3 completion evidence.
+- Phase 3 completion evidence after the remaining capabilities and human review.
 
 ## Phase 2 — Artifact discovery (implementation complete)
 

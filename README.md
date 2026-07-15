@@ -66,6 +66,7 @@ bar/
 │   ├── bar-bench/     # resource benchmark harness (spec §4, §22)
 │   └── bar-daemon/    # the mandatory model-free process (spec §5.1)
 ├── migrations/        # root SQL migrations, embedded at compile time
+├── fixtures/          # versioned adversarial and end-to-end test corpora
 ├── docs/              # normative specification and phase evidence
 ├── STATUS.md          # living project status
 └── Cargo.toml         # workspace root
