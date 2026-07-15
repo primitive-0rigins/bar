@@ -6,13 +6,15 @@ itself, compares that intent against implementation and live execution, prepares
 repair-ready findings, waits for **human approval**, hands approved work to a
 connected coding agent, and then independently verifies the result.
 
-> **Status:** Phase 3 — contract extraction shadow, in progress. Deterministic
+> **Status:** Phase 3 — contract extraction shadow, implementation complete and
+> pending human review. Deterministic
 > source-bound claim extraction, cross-artifact hierarchy/glossary/conflict
 > candidate analysis, strict optional-model output validation, honest
 > disabled/unavailable model state, and idempotent durable candidate persistence
-> are in place and green. Build progresses through
+> are in place and green; Phase 4 scope, temporal resolution, and adjudication
+> are next. Build progresses through
 > the phased manual in [`docs/spec.md`](docs/spec.md) §21. See [`STATUS.md`](STATUS.md)
-> for the current state and remaining Phase 3 work.
+> for the current state and Phase 4 roadmap.
 
 ## What it is
 

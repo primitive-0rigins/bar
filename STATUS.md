@@ -2,7 +2,7 @@
 
 Living status of the Behavioral Assurance Runtime build. Newest first.
 
-## Current phase: 3 — Contract extraction shadow (in progress)
+## Current phase: 3 — Contract extraction shadow (implementation complete)
 
 Per [`docs/spec.md`](docs/spec.md) §21 and Appendix H.1, Phase 3 classifies
 normative claims, preserves exact source spans, proposes hierarchy/glossary/
@@ -69,26 +69,32 @@ conflict candidates, and treats optional-model output as untrusted data.
   and cross-document conflict; conflict pairs are fingerprint-canonical across
   persistence round trips.
 
-The implemented slice passes the two Phase 3 safety invariants: every emitted
+The implementation passes the two Phase 3 safety invariants: every emitted
 claim cites verified source bytes, and malformed or source-inconsistent model
-output is rejected. The full phase is not complete. All 95 repository tests
-pass; clippy `-D warnings` and fmt are clean. Implementation revisions:
+output is rejected. All 95 repository tests pass; clippy `-D warnings` and fmt
+are clean. Implementation revisions:
 `3fb0fc6`, `74e1408`, `85fff4d`, `b483f02`, `3ca47dc`, `c5959d1`,
 `3238221`, and `502037f`.
 
-### Remaining before Phase 3 completion
+Completion evidence per spec Appendix AP:
+[`docs/phase-evidence/phase-3.md`](docs/phase-evidence/phase-3.md) — **pending
+human review**.
 
-- Explicit-reference hierarchy and semantic hierarchy proposals; current
-  attachment is structural Markdown containment only.
+### Known limitations and next-phase work
+
+- Explicit-reference hierarchy has no defined syntax in the spec; current
+  attachment is structural Markdown containment only. Semantic corroboration
+  follows the static-adapter phases.
 - Glossary/alias graph corroboration and operator correction inputs;
   cross-artifact ambiguity is durable, but aliases still come only from
   explicit definitions and no terms are merged automatically.
-- Scope- and temporal-aware conflict generation; direct cross-artifact
-  required/prohibited opposites are now durable candidates.
+- Scope- and temporal-aware conflict resolution, validity, supersession, and
+  operator rulings are Phase 4; direct cross-artifact required/prohibited
+  opposites remain durable provisional candidates.
 - Optional worker adapter invocation, isolation, and resource-pressure
   suspension; current code validates bounded output and reports unavailable
   honestly but invokes no model.
-- Phase 3 completion evidence after the remaining capabilities and human review.
+- Human review of the Phase 3 completion evidence remains pending.
 
 ## Phase 2 — Artifact discovery (implementation complete)
 
