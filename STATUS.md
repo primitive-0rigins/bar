@@ -46,11 +46,12 @@ versioned operator rulings when overlap remains ambiguous.
   database reopen.
 - `bar-contract::ruling` and `bar-store` migration `0009` add immutable,
   source-context-bound operator rulings. The store validates contract and
-  evidence target ownership, records an ordered contract-reference index, and
-  audits creation and supersession atomically. An unchanged ambiguity reuses its
-  active ruling; an edit creates a replacement record; expiry permits a new
-  ruling; replay is idempotent; corrupt persisted links, target boundaries,
-  timestamps, or serialized values fail closed on reload.
+  evidence target ownership plus complete source-context integrity before create
+  or reload, records an ordered contract-reference index, and audits creation
+  and supersession atomically. An unchanged ambiguity reuses its active ruling;
+  an edit creates a replacement record; expiry permits a new ruling; replay is
+  idempotent; corrupt persisted links, target boundaries, timestamps, or
+  serialized values fail closed on reload.
 - `bar-store::resolve_contract_in_context` resolves scope only at the persisted
   scope-context observation time and requires the contract and context evidence
   to belong to the same target. Callers can no longer reuse one evidence record
@@ -58,9 +59,9 @@ versioned operator rulings when overlap remains ambiguous.
 - `bar-store` migration `0010` adds immutable operator attestations for
   source-bound scope context. Each attestation is first-class evidence tied to
   the exact target/revision/context, is actor-audited and replay-idempotent, and
-  fails closed on malformed or cross-boundary reload. The explicit attested
-  resolver consumes this human-trusted path without treating raw source text as
-  semantic proof.
+  rejects malformed source context before write and on reload. The explicit
+  attested resolver consumes this human-trusted path without treating raw source
+  text as semantic proof.
 - `fixtures/phase-4-resolution/expected.json` is a checked-in adversarial
   resolver corpus. Its strict, table-driven test covers both precedence
   directions, scoped exceptions, repeated ambiguity, missing context,
@@ -72,7 +73,7 @@ versioned operator rulings when overlap remains ambiguous.
   versions resolve as ambiguous rather than selecting a contract.
 
 All 113 repository tests pass; clippy `-D warnings` and fmt are clean.
-Implementation revisions: `5a9b3ef`, `f9e71af`, `414be5c`, `15adcfd`, `ed0f016`, `2054c8d`, `a93a672`, `5483b93`, `3e63c89`, `ee9b01d`.
+Implementation revisions: `5a9b3ef`, `f9e71af`, `414be5c`, `15adcfd`, `ed0f016`, `2054c8d`, `a93a672`, `5483b93`, `3e63c89`, `ee9b01d`, `1862d2e`.
 
 ### Remaining before Phase 4 completion
 
