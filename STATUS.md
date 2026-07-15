@@ -14,6 +14,19 @@ conflict candidates, and treats optional-model output as untrusted data.
   It recognizes required, prohibited, expected, and planned language; assigns a
   conservative behavioral/architecture level; and fingerprints the normalized
   statement plus exact source identity and byte span.
+- Segmentation now covers Markdown headings, multiline paragraphs with
+  sentence boundaries, list items, table cells, single-line HTML comments, and
+  Rust-style line comments. Fenced Markdown code/examples are excluded so
+  example `MUST` text cannot become an active-looking candidate.
+- Claims inherit the nearest Markdown heading as a source-bound structural
+  hierarchy candidate. This is a proposal only—it does not establish an
+  authoritative parent contract.
+- Explicit `means` / `is defined as` statements produce source-bound glossary
+  candidates; `also called` / `aka` clauses produce aliases without rewriting
+  source text or merging entities automatically.
+- Direct required/prohibited opposites produce provisional conflict candidates
+  only when their normalized subject is identical. Same-direction claims and
+  different subjects do not conflict, and neither side is selected or promoted.
 - Every extracted claim carries an `ArtifactId`, exact UTF-8 byte offsets, and a
   SHA-256 of the exact cited bytes. `ArtifactText` first verifies the complete
   text against the discovery inventory hash, so extraction cannot silently bind
@@ -32,16 +45,19 @@ conflict candidates, and treats optional-model output as untrusted data.
 
 The implemented slice passes the two Phase 3 safety invariants: every emitted
 claim cites verified source bytes, and malformed or source-inconsistent model
-output is rejected. The full phase is not complete. All 85 repository tests
-pass; clippy `-D warnings` and fmt are clean. Implementation revision:
-`3fb0fc6`.
+output is rejected. The full phase is not complete. All 88 repository tests
+pass; clippy `-D warnings` and fmt are clean. Implementation revisions:
+`3fb0fc6`, `74e1408`, and `85fff4d`.
 
 ### Remaining before Phase 3 completion
 
-- Paragraph, table-row, comment-block, and richer Markdown segmentation.
-- Explicit hierarchy candidates and structural parent attachment.
-- Target glossary and alias candidates without rewriting source text.
-- Conflict candidates that preserve competing claims without adjudicating them.
+- Multiline HTML/comment blocks, blockquotes, and additional prose formats.
+- Explicit-reference hierarchy and semantic hierarchy proposals; current
+  attachment is structural Markdown containment only.
+- Cross-artifact glossary/alias graph, structural corroboration, and operator
+  correction inputs; current candidates come from explicit local definitions.
+- Cross-artifact/scope-aware conflict generation and persistence; current
+  candidates cover direct opposites within one analyzed artifact.
 - Optional worker integration and its explicit disabled/unavailable runtime
   state; current code validates bounded output but invokes no model.
 - Canonical fixture/golden-corpus coverage and Phase 3 completion evidence.
