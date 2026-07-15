@@ -97,6 +97,11 @@ Implementation revisions: `5a9b3ef`, `f9e71af`, `414be5c`, `15adcfd`.
 
 ### Known repository debt
 
+- Canonicalization and open-time rechecks block stable traversal, symlink, and
+  size-limit escapes, but a concurrently hostile writable target can still race
+  directory entries between resolution and open. Descriptor-relative
+  `openat`/no-follow traversal is required before BAR claims race-resistant
+  monitoring of untrusted writable trees.
 - `crates/bar-store/src/lib.rs` is the only current god-file hotspot: about
   1,700 production lines plus its in-file test module. Split it by audit,
   target/inventory, and contract persistence in a dedicated behavior-preserving
