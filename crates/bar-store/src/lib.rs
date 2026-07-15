@@ -17,13 +17,16 @@ use std::collections::HashMap;
 use std::str::FromStr;
 
 use bar_audit::{record_hash, AuditCategory, AuditChain, AuditEvent, AuditRecord, GENESIS};
-use bar_contract::scope::{validate_declaration, ContractScope, TemporalWindow};
+use bar_contract::scope::{
+    validate_context, validate_declaration, ContractScope, ScopeContext, TemporalWindow,
+};
 use bar_contract::{
     glossary_ambiguities, ConflictCandidate, CorpusAnalysis, ExtractedClaim,
     GlossaryAmbiguityCandidate, GlossaryCandidate, HierarchyCandidate, SourceRef,
 };
 use bar_core::{
-    ContractId, ContractLevel, Error, NormativeKind, Result, RevisionId, Sha256Digest, TargetId,
+    ContractId, ContractLevel, Error, EvidenceId, NormativeKind, Result, RevisionId, Sha256Digest,
+    TargetId,
 };
 use bar_discovery::dependency::ArtifactDependency;
 use bar_discovery::{ArtifactKind, Inventory, PriorArtifact, PriorInventory};
@@ -738,6 +741,152 @@ impl Store {
         })
     }
 
+    /// Persists an immutable scope-context observation bound to an exact
+    /// artifact span in a target revision. Source revision is derived from the
+    /// stored revision identity, never accepted from caller-supplied context.
+    pub async fn persist_scope_context_evidence(
+        &self,
+        target_id: &TargetId,
+        revision_id: &RevisionId,
+        context: &ScopeContext,
+        source: &SourceRef,
+        observed_at_ms: u64,
+        now_ms: u64,
+    ) -> Result<ScopeContextPersistence> {
+        let observed_at = i64::try_from(observed_at_ms)
+            .map_err(|_| Error::Corrupt("timestamp exceeds SQLite integer range".into()))?;
+        let created_at = i64::try_from(now_ms)
+            .map_err(|_| Error::Corrupt("timestamp exceeds SQLite integer range".into()))?;
+        let start_offset = i64::try_from(source.start_offset)
+            .map_err(|_| Error::Corrupt("scope context source span is too large".into()))?;
+        let end_offset = i64::try_from(source.end_offset)
+            .map_err(|_| Error::Corrupt("scope context source span is too large".into()))?;
+        if start_offset >= end_offset {
+            return Err(Error::Corrupt("invalid scope context source span".into()));
+        }
+        let mut tx = self.pool.begin().await.map_err(storage("begin"))?;
+        let revision: Option<(String, Option<String>)> = sqlx::query_as(
+            "SELECT target_id, source_commit FROM target_revisions WHERE revision_id = ?",
+        )
+        .bind(revision_id.to_string())
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(storage("load scope context revision"))?;
+        let (_, source_commit) = revision
+            .filter(|(stored_target, _)| stored_target == &target_id.to_string())
+            .ok_or_else(|| {
+                Error::Corrupt(format!(
+                    "scope context references revision {revision_id} outside target {target_id}"
+                ))
+            })?;
+
+        let artifact_size: Option<i64> = sqlx::query_scalar(
+            "SELECT size_bytes FROM artifacts \
+             WHERE artifact_id = ? AND target_id = ? AND revision_id = ?",
+        )
+        .bind(source.artifact_id.to_string())
+        .bind(target_id.to_string())
+        .bind(revision_id.to_string())
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(storage("load scope context artifact"))?;
+        if artifact_size.is_none_or(|size| end_offset > size) {
+            return Err(Error::Corrupt(format!(
+                "scope context source {} is outside revision {revision_id}",
+                source.artifact_id
+            )));
+        }
+
+        let mut bound_context = context.clone();
+        bound_context.source_revision = source_commit;
+        validate_context(&bound_context)?;
+        let context_json = serde_json::to_string(&bound_context)
+            .map_err(|e| Error::Corrupt(format!("serialize scope context: {e}")))?;
+        let existing: Option<String> = sqlx::query_scalar(
+            "SELECT evidence_id FROM scope_context_evidence \
+             WHERE revision_id = ? AND context_json = ? AND artifact_id = ? \
+             AND start_offset = ? AND end_offset = ? AND exact_text_sha256 = ? \
+             AND observed_at_ms = ?",
+        )
+        .bind(revision_id.to_string())
+        .bind(&context_json)
+        .bind(source.artifact_id.to_string())
+        .bind(start_offset)
+        .bind(end_offset)
+        .bind(source.exact_text_sha256.to_string())
+        .bind(observed_at)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(storage("lookup scope context evidence"))?;
+        if let Some(evidence_id) = existing {
+            tx.commit().await.map_err(storage("commit"))?;
+            return Ok(ScopeContextPersistence {
+                evidence_id: evidence_id.parse()?,
+                inserted: false,
+            });
+        }
+
+        let evidence_id = EvidenceId::generate();
+        sqlx::query(
+            "INSERT INTO scope_context_evidence \
+             (evidence_id, target_id, revision_id, context_json, artifact_id, start_offset, \
+              end_offset, exact_text_sha256, observed_at_ms, created_at_ms) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(evidence_id.to_string())
+        .bind(target_id.to_string())
+        .bind(revision_id.to_string())
+        .bind(&context_json)
+        .bind(source.artifact_id.to_string())
+        .bind(start_offset)
+        .bind(end_offset)
+        .bind(source.exact_text_sha256.to_string())
+        .bind(observed_at)
+        .bind(created_at)
+        .execute(&mut *tx)
+        .await
+        .map_err(storage("insert scope context evidence"))?;
+        append_audit(
+            &mut tx,
+            AuditEvent {
+                category: AuditCategory::EvidenceMutation,
+                actor: SYSTEM_ACTOR.to_string(),
+                summary: "recorded source-bound scope context".into(),
+                subject: Some(evidence_id.to_string()),
+                occurred_at_ms: now_ms,
+            },
+        )
+        .await?;
+        tx.commit().await.map_err(storage("commit"))?;
+        Ok(ScopeContextPersistence {
+            evidence_id,
+            inserted: true,
+        })
+    }
+
+    /// Reloads a strict scope-context observation and its source binding.
+    pub async fn load_scope_context_evidence(
+        &self,
+        evidence_id: &EvidenceId,
+    ) -> Result<StoredScopeContextEvidence> {
+        let row: Option<ScopeContextEvidenceRow> = sqlx::query_as(
+            "SELECT e.target_id, e.revision_id, e.context_json, e.artifact_id, e.start_offset, \
+                    e.end_offset, e.exact_text_sha256, e.observed_at_ms, r.source_commit, \
+                    a.size_bytes \
+             FROM scope_context_evidence e \
+             JOIN target_revisions r ON r.revision_id = e.revision_id AND r.target_id = e.target_id \
+             JOIN artifacts a ON a.artifact_id = e.artifact_id \
+                AND a.revision_id = e.revision_id AND a.target_id = e.target_id \
+             WHERE e.evidence_id = ?",
+        )
+        .bind(evidence_id.to_string())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(storage("load scope context evidence"))?;
+        row.ok_or_else(|| Error::Corrupt(format!("unknown scope context {evidence_id}")))?
+            .into_evidence(*evidence_id)
+    }
+
     /// Persists structural hierarchy, glossary, and conflict candidates after
     /// their claim fingerprints have been resolved to contracts. The complete
     /// candidate set is validated before any row is written.
@@ -1091,6 +1240,24 @@ pub struct StoredContractResolution {
     pub supersedes: Vec<ContractId>,
 }
 
+/// Result of idempotently persisting a scope-context observation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScopeContextPersistence {
+    pub evidence_id: EvidenceId,
+    pub inserted: bool,
+}
+
+/// Reloaded context with exact target, revision, time, and source provenance.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredScopeContextEvidence {
+    pub evidence_id: EvidenceId,
+    pub target_id: TargetId,
+    pub revision_id: RevisionId,
+    pub context: ScopeContext,
+    pub source: SourceRef,
+    pub observed_at_ms: u64,
+}
+
 /// Counts newly inserted candidate rows during an idempotent persistence call.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct CandidatePersistence {
@@ -1193,6 +1360,58 @@ struct ContractResolutionRow {
     scope_json: String,
     valid_from_ms: Option<i64>,
     valid_until_ms: Option<i64>,
+}
+
+#[derive(FromRow)]
+struct ScopeContextEvidenceRow {
+    target_id: String,
+    revision_id: String,
+    context_json: String,
+    artifact_id: String,
+    start_offset: i64,
+    end_offset: i64,
+    exact_text_sha256: String,
+    observed_at_ms: i64,
+    source_commit: Option<String>,
+    size_bytes: i64,
+}
+
+impl ScopeContextEvidenceRow {
+    fn into_evidence(self, evidence_id: EvidenceId) -> Result<StoredScopeContextEvidence> {
+        let context: ScopeContext = serde_json::from_str(&self.context_json)
+            .map_err(|e| Error::Corrupt(format!("invalid persisted scope context: {e}")))?;
+        validate_context(&context)?;
+        if context.source_revision != self.source_commit {
+            return Err(Error::Corrupt(
+                "scope context source revision does not match its revision".into(),
+            ));
+        }
+        let start_offset = usize::try_from(self.start_offset)
+            .map_err(|_| Error::Corrupt("negative scope context source offset".into()))?;
+        let end_offset = usize::try_from(self.end_offset)
+            .map_err(|_| Error::Corrupt("negative scope context source offset".into()))?;
+        let size_bytes = usize::try_from(self.size_bytes)
+            .map_err(|_| Error::Corrupt("negative scope context artifact size".into()))?;
+        if start_offset >= end_offset || end_offset > size_bytes {
+            return Err(Error::Corrupt(
+                "invalid persisted scope context source span".into(),
+            ));
+        }
+        Ok(StoredScopeContextEvidence {
+            evidence_id,
+            target_id: self.target_id.parse()?,
+            revision_id: self.revision_id.parse()?,
+            context,
+            source: SourceRef {
+                artifact_id: self.artifact_id.parse()?,
+                start_offset,
+                end_offset,
+                exact_text_sha256: self.exact_text_sha256.parse()?,
+            },
+            observed_at_ms: u64::try_from(self.observed_at_ms)
+                .map_err(|_| Error::Corrupt("negative scope context observation time".into()))?,
+        })
+    }
 }
 
 impl ContractRow {
@@ -2187,6 +2406,136 @@ mod tests {
             .await
             .unwrap();
         assert!(store.load_contract_resolution(&new_id).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn scope_context_is_source_bound_target_isolated_and_replay_safe() {
+        use bar_contract::scope::{resolve_applicability, ApplicabilityState, ScopedContract};
+
+        let repo = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(repo.path()).unwrap();
+        let text = "Production cache configuration. The cache MUST retain entries.";
+        write_file(&root, "config/runtime.md", text.as_bytes());
+        let (store, dir) = temp_store().await;
+        let target_id = store
+            .register_target(&tree_target(&root), T0)
+            .await
+            .unwrap()
+            .target_id;
+        let revision_id = store
+            .record_revision(&target_id, &revision("commit-a", None), T0)
+            .await
+            .unwrap()
+            .revision_id;
+        let inventory = bar_discovery::scan(
+            &root,
+            &bar_discovery::ScanConfig::default(),
+            &PriorInventory::new(),
+        )
+        .unwrap();
+        store
+            .persist_inventory(&target_id, &revision_id, &inventory, T0)
+            .await
+            .unwrap();
+        let artifact = &inventory.artifacts[0];
+        let source = SourceRef {
+            artifact_id: artifact.artifact_id(&revision_id),
+            start_offset: 0,
+            end_offset: text.len(),
+            exact_text_sha256: artifact.content_sha256.parse().unwrap(),
+        };
+        let supplied = ScopeContext {
+            environment: Some("production".into()),
+            component: Some("cache".into()),
+            source_revision: Some("caller-forged".into()),
+            ..ScopeContext::default()
+        };
+
+        assert!(store
+            .persist_scope_context_evidence(
+                &TargetId::generate(),
+                &revision_id,
+                &supplied,
+                &source,
+                T0 + 1,
+                T0 + 2,
+            )
+            .await
+            .is_err());
+        let first = store
+            .persist_scope_context_evidence(
+                &target_id,
+                &revision_id,
+                &supplied,
+                &source,
+                T0 + 1,
+                T0 + 2,
+            )
+            .await
+            .unwrap();
+        let replay = store
+            .persist_scope_context_evidence(
+                &target_id,
+                &revision_id,
+                &supplied,
+                &source,
+                T0 + 1,
+                T0 + 3,
+            )
+            .await
+            .unwrap();
+        assert!(first.inserted);
+        assert_eq!(first.evidence_id, replay.evidence_id);
+        assert!(!replay.inserted);
+
+        let url = format!("sqlite://{}", dir.path().join("bar.db").display());
+        let reopened = Store::connect(&url).await.unwrap();
+        reopened.migrate().await.unwrap();
+        let loaded = reopened
+            .load_scope_context_evidence(&first.evidence_id)
+            .await
+            .unwrap();
+        assert_eq!(loaded.target_id, target_id);
+        assert_eq!(loaded.revision_id, revision_id);
+        assert_eq!(loaded.source, source);
+        assert_eq!(loaded.context.source_revision.as_deref(), Some("commit-a"));
+        assert_eq!(loaded.observed_at_ms, T0 + 1);
+
+        let scope = ContractScope {
+            environments: vec!["production".into()],
+            components: vec!["cache".into()],
+            source_revisions: vec!["commit-a".into()],
+            ..ContractScope::default()
+        };
+        assert_eq!(
+            resolve_applicability(
+                ScopedContract {
+                    scope: &scope,
+                    temporal: &TemporalWindow::default(),
+                    normative_kind: NormativeKind::Required,
+                },
+                &loaded.context,
+                loaded.observed_at_ms,
+            )
+            .state,
+            ApplicabilityState::Applicable
+        );
+        let chain = reopened.load_audit_chain().await.unwrap();
+        chain.verify().unwrap();
+        assert_eq!(chain.len(), 5, "failure and replay emit no evidence events");
+
+        sqlx::query(
+            "UPDATE scope_context_evidence SET context_json = '{\"unknown\":true}' \
+             WHERE evidence_id = ?",
+        )
+        .bind(first.evidence_id.to_string())
+        .execute(&store.pool)
+        .await
+        .unwrap();
+        assert!(reopened
+            .load_scope_context_evidence(&first.evidence_id)
+            .await
+            .is_err());
     }
 
     #[tokio::test]

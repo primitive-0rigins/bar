@@ -147,6 +147,32 @@ pub fn validate_declaration(
     Ok(())
 }
 
+/// Validates observed context values before they are bound to evidence.
+pub fn validate_context(context: &ScopeContext) -> Result<()> {
+    let values_are_valid = [
+        context.deployment.as_deref(),
+        context.configuration.as_deref(),
+        context.environment.as_deref(),
+        context.component.as_deref(),
+        context.mode.as_deref(),
+        context.source_revision.as_deref(),
+        context.tenant_scope.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .all(|value| !value.trim().is_empty())
+        && context
+            .feature_flags
+            .as_deref()
+            .is_none_or(|flags| flags.iter().all(|flag| !flag.trim().is_empty()));
+    if !values_are_valid {
+        return Err(Error::Corrupt(
+            "scope context contains an empty value".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Resolves one contract without guessing when scope or time is malformed or
 /// incomplete.
 pub fn resolve_applicability(
@@ -372,6 +398,11 @@ mod tests {
         assert!(serde_json::from_str::<ApplicabilityState>(r#""active""#).is_err());
         assert!(serde_json::from_str::<ContractScope>(r#"{"unknown":[]}"#).is_err());
         assert!(serde_json::from_str::<TemporalWindow>(r#"{"expires":4}"#).is_err());
+        assert!(validate_context(&ScopeContext {
+            feature_flags: Some(vec![" ".into()]),
+            ..ScopeContext::default()
+        })
+        .is_err());
     }
 
     #[test]
