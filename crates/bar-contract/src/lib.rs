@@ -182,12 +182,34 @@ fn segment_document(artifact: &ArtifactText) -> Vec<Segment> {
     let mut segments = Vec::new();
     let mut paragraph = None;
     let mut heading = None;
+    let mut fence = None;
     let mut line_start = 0;
 
     for line in artifact.text.split_inclusive('\n') {
         let content = line.trim_end_matches(['\r', '\n']);
         let (trim_start, trim_end) = trimmed_bounds(content);
         let trimmed = &content[trim_start..trim_end];
+
+        let fence_marker = if trimmed.starts_with("```") {
+            Some(b'`')
+        } else if trimmed.starts_with("~~~") {
+            Some(b'~')
+        } else {
+            None
+        };
+        if let Some(active) = fence {
+            if fence_marker == Some(active) {
+                fence = None;
+            }
+            line_start += line.len();
+            continue;
+        }
+        if let Some(marker) = fence_marker {
+            flush_paragraph(&mut segments, &mut paragraph, &artifact.text);
+            fence = Some(marker);
+            line_start += line.len();
+            continue;
+        }
 
         if trimmed.is_empty() {
             flush_paragraph(&mut segments, &mut paragraph, &artifact.text);
@@ -803,5 +825,17 @@ mod tests {
 
         assert_eq!(analysis.claims.len(), 3);
         assert!(analysis.conflicts.is_empty());
+    }
+
+    #[test]
+    fn fenced_examples_do_not_become_contracts() {
+        let text = "# Example\n\n```rust\n// The demo MUST deploy automatically.\n```\n\nThe daemon MUST remain model-optional.\n";
+        let analysis = analyze_document(&artifact(text)).unwrap();
+
+        assert_eq!(analysis.claims.len(), 1);
+        assert_eq!(
+            analysis.claims[0].statement,
+            "The daemon MUST remain model-optional."
+        );
     }
 }
