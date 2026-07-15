@@ -55,6 +55,12 @@ versioned operator rulings when overlap remains ambiguous.
   scope-context observation time and requires the contract and context evidence
   to belong to the same target. Callers can no longer reuse one evidence record
   with a substituted earlier or later evaluation time.
+- `bar-store` migration `0010` adds immutable operator attestations for
+  source-bound scope context. Each attestation is first-class evidence tied to
+  the exact target/revision/context, is actor-audited and replay-idempotent, and
+  fails closed on malformed or cross-boundary reload. The explicit attested
+  resolver consumes this human-trusted path without treating raw source text as
+  semantic proof.
 - `fixtures/phase-4-resolution/expected.json` is a checked-in adversarial
   resolver corpus. Its strict, table-driven test covers both precedence
   directions, scoped exceptions, repeated ambiguity, missing context,
@@ -62,14 +68,14 @@ versioned operator rulings when overlap remains ambiguous.
   and inactive historical text.
 
 All 112 repository tests pass; clippy `-D warnings` and fmt are clean.
-Implementation revisions: `5a9b3ef`, `f9e71af`, `414be5c`, `15adcfd`, `ed0f016`, `2054c8d`, `a93a672`.
+Implementation revisions: `5a9b3ef`, `f9e71af`, `414be5c`, `15adcfd`, `ed0f016`, `2054c8d`, `a93a672`, `5483b93`.
 
 ### Remaining before Phase 4 completion
 
-- Add trusted adapters or operator attestations that populate deployment,
-  environment, configuration, component, mode, flags, and tenant values. The
-  current snapshot proves target/revision/source provenance but does not infer
-  the semantic values from the cited bytes.
+- Add trusted adapters that populate deployment, environment, configuration,
+  component, mode, flags, and tenant values automatically. Operator
+  attestations now provide a source-bound human-trusted path, but BAR does not
+  infer semantic values from cited bytes on its own.
 - Model the remaining operator dispositions (defer, reject, and request more
   evidence). The durable ruling core currently captures a chosen interpretation
   and its rejected alternatives; the dashboard/API workflow is Phase 8.
