@@ -201,7 +201,7 @@ pub fn assess_proof_obligation(
         .collect::<Vec<_>>();
     let status = if obligation.freshness_revision != *evaluated_revision {
         ProofStatus::Stale
-    } else if !missing_evidence_levels.is_empty() {
+    } else if traceability.status != MappingStatus::Mapped || !missing_evidence_levels.is_empty() {
         ProofStatus::Unproven
     } else if obligation
         .required_evidence_levels
@@ -712,6 +712,35 @@ mod tests {
         )
         .unwrap();
         assert_eq!(test.status, ProofStatus::TestSupported);
+
+        let partial = ContractTraceability {
+            contract_fingerprint: contract,
+            status: MappingStatus::PartiallyMapped,
+            mappings: vec![TraceMapping {
+                reference: "target".into(),
+                target: TraceTarget {
+                    artifact_id: artifact_id(1),
+                    path: "src/target.rs".into(),
+                    name: "target".into(),
+                    line: 1,
+                    kind: TraceTargetKind::Symbol,
+                },
+            }],
+            unresolved: vec![UnresolvedReference::Missing {
+                reference: "audit".into(),
+            }],
+        };
+        let partial_assessment = assess_proof_obligation(
+            &ProofObligation {
+                required_evidence_levels: vec![EvidenceKind::Code],
+                ..obligation
+            },
+            &partial,
+            &revision(1),
+        )
+        .unwrap();
+        assert_eq!(partial_assessment.status, ProofStatus::Unproven);
+        assert!(partial_assessment.missing_evidence_levels.is_empty());
     }
 
     #[test]

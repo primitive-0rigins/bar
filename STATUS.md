@@ -31,8 +31,9 @@ review is still pending.
 - `bar-coverage::ProofObligation` declares required evidence levels against an
   exact contract ID, source-contract fingerprint, and revision. Its evaluator
   returns only `mapped`, `test_supported`, `unproven`, or `stale` at this stage:
-  a symbol or config mapping never becomes static or runtime proof by
-  implication.
+  every explicit reference must map before a partial trace can claim mapping or
+  test support, and a symbol or config mapping never becomes static or runtime
+  proof by implication.
 - `bar-store` migration `0013` persists immutable proof-obligation declarations
   bound to one contract fingerprint, target, revision, and exact freshness
   revision. Insert and audit are atomic; exact replay revalidates, changed
