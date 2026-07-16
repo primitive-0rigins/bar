@@ -68,6 +68,52 @@ pub struct ExtractedClaim {
     pub fingerprint: Sha256Digest,
 }
 
+/// Returns the stable identity for one normalized, source-bound claim.
+pub fn claim_fingerprint(
+    normative_kind: NormativeKind,
+    level: ContractLevel,
+    statement: &str,
+    source: &SourceRef,
+) -> Sha256Digest {
+    let mut fingerprint = Sha256::new();
+    update_field(&mut fingerprint, normative_kind.as_str().as_bytes());
+    update_field(&mut fingerprint, level.as_str().as_bytes());
+    update_field(&mut fingerprint, normalize_whitespace(statement).as_bytes());
+    update_field(&mut fingerprint, source.artifact_id.to_string().as_bytes());
+    update_field(
+        &mut fingerprint,
+        &(source.start_offset as u64).to_be_bytes(),
+    );
+    update_field(&mut fingerprint, &(source.end_offset as u64).to_be_bytes());
+    Sha256Digest::from_bytes(fingerprint.finalize().into())
+}
+
+/// Rejects a claim whose statement, source span, or fingerprint is inconsistent
+/// with the deterministic extraction identity.
+pub fn validate_extracted_claim(claim: &ExtractedClaim) -> Result<()> {
+    if claim.statement.is_empty()
+        || claim.statement != normalize_whitespace(&claim.statement)
+        || claim.source.start_offset >= claim.source.end_offset
+    {
+        return Err(Error::Corrupt(
+            "contract claim has an invalid statement or source span".into(),
+        ));
+    }
+    if claim.fingerprint
+        != claim_fingerprint(
+            claim.normative_kind,
+            claim.level,
+            &claim.statement,
+            &claim.source,
+        )
+    {
+        return Err(Error::Corrupt(
+            "contract claim fingerprint does not match its contents".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Structural heading context proposed as a parent for a claim.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HierarchyCandidate {
@@ -909,22 +955,14 @@ fn build_claim(
     start_offset: usize,
     end_offset: usize,
 ) -> ExtractedClaim {
-    let mut fingerprint = Sha256::new();
-    update_field(&mut fingerprint, normative_kind.as_str().as_bytes());
-    update_field(&mut fingerprint, level.as_str().as_bytes());
-    update_field(&mut fingerprint, normalize_whitespace(statement).as_bytes());
-    update_field(
-        &mut fingerprint,
-        artifact.artifact_id.to_string().as_bytes(),
-    );
-    update_field(&mut fingerprint, &(start_offset as u64).to_be_bytes());
-    update_field(&mut fingerprint, &(end_offset as u64).to_be_bytes());
+    let statement = normalize_whitespace(statement);
+    let source = source_ref(artifact, start_offset, end_offset);
     ExtractedClaim {
         normative_kind,
         level,
-        statement: normalize_whitespace(statement),
-        source: source_ref(artifact, start_offset, end_offset),
-        fingerprint: Sha256Digest::from_bytes(fingerprint.finalize().into()),
+        fingerprint: claim_fingerprint(normative_kind, level, &statement, &source),
+        statement,
+        source,
     }
 }
 

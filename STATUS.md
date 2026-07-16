@@ -315,7 +315,8 @@ conflict candidates, and treats optional-model output as untrusted data.
 - `bar-store`: migration `0005` adds revision-scoped `contracts` and mandatory
   `contract_sources`. Persistence is fingerprint-idempotent and records
   each newly extracted contract as an audited evidence mutation in the same
-  transaction. Every replay revalidates the returned source-bound claim; a
+  transaction. Every input, replay, and reload recomputes the normalized
+  statement/source-span fingerprint before exposing a source-bound claim; a
   missing source rolls back the full contract batch; unknown persisted
   vocabulary/state is rejected during reload.
 - `bar-store`: migration `0006` adds durable structural hierarchy, glossary,

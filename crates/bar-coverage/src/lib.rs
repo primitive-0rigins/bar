@@ -7,7 +7,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use bar_contract::ExtractedClaim;
+use bar_contract::{validate_extracted_claim, ExtractedClaim};
 use bar_core::{
     ArtifactId, ContractId, Error, EvidenceKind, ProofId, ProofStatus, Result, RevisionId,
     Sha256Digest,
@@ -101,6 +101,9 @@ pub fn map_explicit_references(
     artifacts: &[StaticArtifactFacts],
 ) -> Result<Vec<ContractTraceability>> {
     let targets = static_targets(artifacts)?;
+    for claim in claims {
+        validate_extracted_claim(claim)?;
+    }
     Ok(claims
         .iter()
         .map(|claim| map_claim(claim, &targets))
@@ -391,7 +394,7 @@ pub fn explicit_references(statement: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use bar_contract::{ExtractedClaim, SourceRef};
+    use bar_contract::{claim_fingerprint, ExtractedClaim, SourceRef};
     use bar_core::{
         ArtifactId, ContractId, ContractLevel, EvidenceKind, NormativeKind, ProofId, ProofStatus,
         RevisionId, Sha256Digest,
@@ -411,17 +414,23 @@ mod tests {
     }
 
     fn claim(statement: &str, byte: u8) -> ExtractedClaim {
+        let source = SourceRef {
+            artifact_id: artifact_id(byte),
+            start_offset: 0,
+            end_offset: 1,
+            exact_text_sha256: Sha256Digest::from_bytes([byte; 32]),
+        };
         ExtractedClaim {
             normative_kind: NormativeKind::Required,
             level: ContractLevel::Implementation,
             statement: statement.into(),
-            source: SourceRef {
-                artifact_id: artifact_id(byte),
-                start_offset: 0,
-                end_offset: 1,
-                exact_text_sha256: Sha256Digest::from_bytes([byte; 32]),
-            },
-            fingerprint: Sha256Digest::from_bytes([byte; 32]),
+            fingerprint: claim_fingerprint(
+                NormativeKind::Required,
+                ContractLevel::Implementation,
+                statement,
+                &source,
+            ),
+            source,
         }
     }
 

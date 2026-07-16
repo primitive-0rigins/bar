@@ -197,7 +197,7 @@ fn hash_part(hasher: &mut Sha256, bytes: &[u8]) {
 
 #[cfg(test)]
 mod tests {
-    use bar_contract::{ExtractedClaim, SourceRef};
+    use bar_contract::{claim_fingerprint, ExtractedClaim, SourceRef};
     use bar_core::{ArtifactId, ContractLevel, NormativeKind, Sha256Digest};
     use bar_coverage::{MappingStatus, TraceTarget, TraceTargetKind, UnresolvedReference};
 
@@ -211,7 +211,18 @@ mod tests {
         byte: u8,
         unresolved: Vec<UnresolvedReference>,
     ) -> TraceableContract {
-        let fingerprint = Sha256Digest::from_bytes([byte; 32]);
+        let source = SourceRef {
+            artifact_id: ArtifactId::from_digest(Sha256Digest::from_bytes([byte; 32])),
+            start_offset: 3,
+            end_offset: 9,
+            exact_text_sha256: Sha256Digest::from_bytes([byte; 32]),
+        };
+        let fingerprint = claim_fingerprint(
+            NormativeKind::Required,
+            ContractLevel::Implementation,
+            statement,
+            &source,
+        );
         let status = if unresolved
             .iter()
             .any(|reference| matches!(reference, UnresolvedReference::Ambiguous { .. }))
@@ -226,12 +237,7 @@ mod tests {
                 normative_kind: NormativeKind::Required,
                 level: ContractLevel::Implementation,
                 statement: statement.into(),
-                source: SourceRef {
-                    artifact_id: ArtifactId::from_digest(Sha256Digest::from_bytes([byte; 32])),
-                    start_offset: 3,
-                    end_offset: 9,
-                    exact_text_sha256: fingerprint,
-                },
+                source,
                 fingerprint,
             },
             traceability: ContractTraceability {

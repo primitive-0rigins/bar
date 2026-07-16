@@ -19,8 +19,8 @@ use std::str::FromStr;
 use bar_audit::{record_hash, AuditCategory, AuditChain, AuditEvent, AuditRecord, GENESIS};
 use bar_contract::scope::{validate_declaration, ContractScope, TemporalWindow};
 use bar_contract::{
-    glossary_ambiguities, ConflictCandidate, CorpusAnalysis, ExtractedClaim,
-    GlossaryAmbiguityCandidate, GlossaryCandidate, HierarchyCandidate, SourceRef,
+    glossary_ambiguities, validate_extracted_claim, ConflictCandidate, CorpusAnalysis,
+    ExtractedClaim, GlossaryAmbiguityCandidate, GlossaryCandidate, HierarchyCandidate, SourceRef,
 };
 use bar_core::{
     ContractId, ContractLevel, Error, NormativeKind, Result, RevisionId, Sha256Digest, TargetId,
@@ -525,6 +525,7 @@ impl Store {
         let mut inserted = 0;
 
         for claim in claims {
+            validate_extracted_claim(claim)?;
             if !artifact_ids.contains(&claim.source.artifact_id.to_string()) {
                 return Err(Error::Corrupt(format!(
                     "contract source {} does not belong to {revision_id}",
@@ -1413,20 +1414,22 @@ impl ContractRow {
                 "invalid persisted contract source span".into(),
             ));
         }
+        let claim = ExtractedClaim {
+            normative_kind,
+            level,
+            statement: self.statement,
+            source: SourceRef {
+                artifact_id: self.artifact_id.parse()?,
+                start_offset,
+                end_offset,
+                exact_text_sha256: self.exact_text_sha256.parse()?,
+            },
+            fingerprint: self.fingerprint.parse()?,
+        };
+        validate_extracted_claim(&claim)?;
         Ok(StoredContract {
             contract_id: self.contract_id.parse()?,
-            claim: ExtractedClaim {
-                normative_kind,
-                level,
-                statement: self.statement,
-                source: SourceRef {
-                    artifact_id: self.artifact_id.parse()?,
-                    start_offset,
-                    end_offset,
-                    exact_text_sha256: self.exact_text_sha256.parse()?,
-                },
-                fingerprint: self.fingerprint.parse()?,
-            },
+            claim,
         })
     }
 }
@@ -2787,6 +2790,21 @@ mod tests {
             .execute(&store.pool)
             .await
             .unwrap();
+
+        let mut tampered_claim = claims.clone();
+        tampered_claim[0].fingerprint = Sha256Digest::from_bytes([0; 32]);
+        assert!(store
+            .persist_contracts(&target_id, &revision_id, &tampered_claim, T0 + 4)
+            .await
+            .is_err());
+
+        sqlx::query("UPDATE contracts SET fingerprint = ? WHERE contract_id = ?")
+            .bind("00".repeat(32))
+            .bind(first.contract_ids[0].to_string())
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        assert!(store.load_contracts(&revision_id).await.is_err());
     }
 
     #[tokio::test]
