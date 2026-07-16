@@ -119,7 +119,7 @@ pub fn validate_contract_traceability(traceability: &ContractTraceability) -> Re
     let mut references = BTreeSet::new();
     for mapping in &traceability.mappings {
         validate_trace_reference(&mapping.reference, &mut references)?;
-        validate_trace_target(&mapping.target)?;
+        validate_trace_target(&mapping.reference, &mapping.target)?;
     }
     for unresolved in &traceability.unresolved {
         match unresolved {
@@ -131,13 +131,15 @@ pub fn validate_contract_traceability(traceability: &ContractTraceability) -> Re
                 candidates,
             } => {
                 validate_trace_reference(reference, &mut references)?;
-                if candidates.is_empty() {
-                    return Err(Error::Corrupt(
-                        "ambiguous traceability reference has no candidates".into(),
-                    ));
-                }
+                let mut distinct_candidates = BTreeSet::new();
                 for candidate in candidates {
-                    validate_trace_target(candidate)?;
+                    validate_trace_target(reference, candidate)?;
+                    distinct_candidates.insert(candidate);
+                }
+                if distinct_candidates.len() < 2 {
+                    return Err(Error::Corrupt(
+                        "ambiguous traceability reference needs distinct candidates".into(),
+                    ));
                 }
             }
         }
@@ -154,7 +156,12 @@ fn validate_trace_reference(reference: &str, references: &mut BTreeSet<String>) 
     Ok(())
 }
 
-fn validate_trace_target(target: &TraceTarget) -> Result<()> {
+fn validate_trace_target(reference: &str, target: &TraceTarget) -> Result<()> {
+    if target.name != reference {
+        return Err(Error::Corrupt(
+            "traceability target does not match its explicit reference".into(),
+        ));
+    }
     if target.path.is_empty() || target.name.is_empty() || target.line == 0 {
         return Err(Error::Corrupt(
             "traceability target lacks source provenance".into(),
@@ -621,22 +628,32 @@ mod tests {
     }
 
     #[test]
-    fn traceability_validation_rejects_duplicate_and_empty_input() {
+    fn traceability_validation_rejects_forged_or_insufficient_targets() {
         let contract = Sha256Digest::from_bytes([9; 32]);
         let mut duplicate = mapped_trace(contract, TraceTargetKind::Symbol);
         duplicate.mappings.push(duplicate.mappings[0].clone());
         assert!(super::validate_contract_traceability(&duplicate).is_err());
 
-        let empty_ambiguity = ContractTraceability {
+        let mut mismatched = mapped_trace(contract, TraceTargetKind::Symbol);
+        mismatched.mappings[0].target.name = "other".into();
+        assert!(super::validate_contract_traceability(&mismatched).is_err());
+
+        let one_candidate_ambiguity = ContractTraceability {
             contract_fingerprint: contract,
             status: MappingStatus::Ambiguous,
             mappings: Vec::new(),
             unresolved: vec![UnresolvedReference::Ambiguous {
                 reference: "authorize".into(),
-                candidates: Vec::new(),
+                candidates: vec![TraceTarget {
+                    artifact_id: artifact_id(1),
+                    path: "src/auth.rs".into(),
+                    name: "authorize".into(),
+                    line: 1,
+                    kind: TraceTargetKind::Symbol,
+                }],
             }],
         };
-        assert!(super::validate_contract_traceability(&empty_ambiguity).is_err());
+        assert!(super::validate_contract_traceability(&one_candidate_ambiguity).is_err());
     }
 
     #[test]

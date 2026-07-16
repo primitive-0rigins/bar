@@ -259,13 +259,22 @@ mod tests {
             2,
             vec![UnresolvedReference::Ambiguous {
                 reference: "authorize".into(),
-                candidates: vec![TraceTarget {
-                    artifact_id: ArtifactId::from_digest(Sha256Digest::from_bytes([2; 32])),
-                    path: "src/auth.rs".into(),
-                    name: "authorize".into(),
-                    line: 1,
-                    kind: TraceTargetKind::Symbol,
-                }],
+                candidates: vec![
+                    TraceTarget {
+                        artifact_id: ArtifactId::from_digest(Sha256Digest::from_bytes([2; 32])),
+                        path: "src/auth.rs".into(),
+                        name: "authorize".into(),
+                        line: 1,
+                        kind: TraceTargetKind::Symbol,
+                    },
+                    TraceTarget {
+                        artifact_id: ArtifactId::from_digest(Sha256Digest::from_bytes([3; 32])),
+                        path: "src/legacy_auth.rs".into(),
+                        name: "authorize".into(),
+                        line: 1,
+                        kind: TraceTargetKind::Symbol,
+                    },
+                ],
             }],
         );
 
