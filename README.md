@@ -7,16 +7,23 @@ execution, prepares repair-ready findings, waits for **human approval**, hands
 approved work to a connected coding agent, and then independently verifies the
 result.
 
-> **Status:** Phase 6 — traceability and proof obligations — has begun with a
-> deterministic contract-to-code mapping foundation. Phase 5’s Rust/Python
-> static architecture adapter is implemented and awaiting human review. It
-> persists artifact/revision-bound shadow facts and records unsupported or
-> uncertain code explicitly. A Phase 7 shadow-only missing-implementation
-> candidate detector also persists immutable, revision-bound candidates; it
-> grants neither repair authority nor a finding lifecycle. Daemon watchers and
-> target scheduling remain later orchestration work. Build progresses through
-> [`docs/spec.md`](docs/spec.md) §21; see [`STATUS.md`](STATUS.md) for current
-> work and completion evidence.
+**Status at a glance**
+
+- **Works today** — the model-free daemon bootstrap, a tamper-evident
+  hash-chained audit log ([demo below](#see-it-catch-tampering)), a relational
+  store (SQLite/PostgreSQL), read-only target and revision identity,
+  incremental artifact inventory, source-bound contract extraction with
+  hierarchy and conflict adjudication, Rust/Python static architecture facts,
+  deterministic contract-to-code traceability, and revision-bound shadow
+  finding candidates. `cargo test --workspace` exercises all of it.
+- **In progress** — proof obligations (Phase 6); the Phase 5 static adapter is
+  implemented and awaiting human review.
+- **Not yet built** — daemon watchers and target scheduling, runtime evidence
+  capture, the human-approval workflow, coding-agent handoff, and post-change
+  verification.
+
+The build progresses phase by phase through [`docs/spec.md`](docs/spec.md)
+§21; [`STATUS.md`](STATUS.md) records current work and completion evidence.
 
 ## What it is
 
@@ -107,6 +114,20 @@ machine-readable logs. The daemon uses built-in defaults when no configuration
 file is present; set `BAR_CONFIG=/path/to/bar.toml` to load an explicit,
 validated configuration. Its complete contract is in
 [`docs/spec.md`](docs/spec.md#appendix-c-complete-configuration-contract).
+
+### See it catch tampering
+
+The audit chain is BAR's trust anchor, and it can defend itself in thirty
+seconds:
+
+```sh
+cargo run -p bar-audit --example tamper_evidence
+```
+
+The example seals a ruling, an approval, and an evidence mutation into the
+chain, verifies the intact chain, then tampers with the "stored" records three
+ways — rewriting an approval, deleting a ruling, and reordering events — and
+shows verification refuse each one with the exact reason.
 
 ### Verify a checkout
 
