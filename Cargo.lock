@@ -93,6 +93,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "bar-static"
+version = "0.0.0"
+dependencies = [
+ "bar-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "bar-store"
 version = "0.0.0"
 dependencies = [

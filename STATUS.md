@@ -2,11 +2,34 @@
 
 Living status of the Behavioral Assurance Runtime build. Newest first.
 
-## Current phase: 5 — Static architecture adapter v1 (ready to begin)
+## Current phase: 5 — Static architecture adapter v1 (in progress)
 
 Phase 4 implementation is complete: scope precedence, temporal validity,
-supersession, and operator adjudication are durable and fail safe. Phase 5 next
-adds static architecture facts while keeping unknown code explicit.
+supersession, and operator adjudication are durable and fail safe. Phase 5 has
+started with shadow-only static architecture facts while keeping unknown code
+explicit.
+
+### Phase 5 started
+
+- `bar-static` defines the Appendix I `StaticFacts` shape for artifacts,
+  symbols, references, call edges, state definitions, effects, tests,
+  configuration reads, and uncertainty.
+- The initial adapter accepts Rust and Python source artifacts, rejects unsafe
+  target-controlled paths, marks unsupported languages as explicit
+  `unsupported_language` uncertainty, and records dynamic dispatch, macros, and
+  dynamic Python lookup as uncertainty instead of guessing.
+- The first deterministic extraction pass covers modules, imports/uses,
+  functions, classes, traits, impls, Rust state enums, Python state constants,
+  tests, simple call edges, and the closed Appendix I effect catalog entries
+  visible in the fixture corpus.
+- `fixtures/phase-5-static` adds Rust and Python fixture sources plus a golden
+  graph-shape fixture. The new crate tests prove fixture extraction, fail-safe
+  path handling, and unsupported-language uncertainty.
+
+Current limitation: this is a dependency-free foundation for the static facts
+contract, not the final Tree-sitter adapter required before Phase 5 completion.
+The next increment should replace the line scanner with Rust/Python Tree-sitter
+parsers, then persist/reload static facts once the schema is designed.
 
 ### Phase 4 delivered
 

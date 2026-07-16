@@ -1,0 +1,19 @@
+[package]
+name = "bar-static"
+description = "Static architecture facts for the Behavioral Assurance Runtime (spec Appendix I, Phase 5)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+bar-core.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true
