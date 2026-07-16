@@ -539,6 +539,27 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_json_key_spellings_remain_ambiguous() {
+        let artifact = StaticArtifactFacts {
+            artifact_id: artifact_id(1),
+            facts: bar_static::analyze_artifact(
+                "config/runtime.json",
+                "{\n  \"server\": { \"port\": 8080 },\n  \"metrics\": { \"port\": 9090 }\n}\n",
+            )
+            .unwrap(),
+        };
+        let traces =
+            map_explicit_references(&[claim("Runtime MUST set `port`.", 9)], &[artifact]).unwrap();
+
+        assert_eq!(traces[0].status, MappingStatus::Ambiguous);
+        assert!(matches!(
+            traces[0].unresolved.as_slice(),
+            [UnresolvedReference::Ambiguous { reference, candidates }]
+                if reference == "port" && candidates.len() == 2
+        ));
+    }
+
+    #[test]
     fn proof_requirements_enforce_evidence_levels_without_claiming_static_proof() {
         let contract = Sha256Digest::from_bytes([9; 32]);
         let obligation = ProofObligation {
