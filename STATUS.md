@@ -110,7 +110,8 @@ Verified on 2026-07-16:
   forms: Rust `std::env::{var,var_os,vars,vars_os}` and Python `os.getenv`,
   `os.environ.get`, and `os.environ[...]`. Direct unescaped quoted keys are
   retained for traceability; dynamic keys and unknown framework-specific access
-  are deliberately left unmapped.
+  are deliberately left unmapped. Persisted configuration access tokens must
+  match their analyzed Rust, Python, TOML, or JSON artifact language.
 - Authority checks are typed, source-bound facts for an exact guard-call
   vocabulary: `authorize`, `check_permission`, `has_permission`,
   `require_permission`, `require_role`, `is_authorized`, and

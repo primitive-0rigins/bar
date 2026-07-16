@@ -308,6 +308,11 @@ pub fn validate_static_facts(facts: &StaticFacts) -> Result<()> {
     }
     for read in &facts.configuration_reads {
         validate_fact_location(&artifact.path, &read.path, read.line, &read.access)?;
+        if !configuration_access_is_valid(artifact.language, &read.access) {
+            return Err(Error::Corrupt(
+                "static configuration read access does not match artifact language".into(),
+            ));
+        }
         if read.key.as_deref().is_some_and(str::is_empty) {
             return Err(Error::Corrupt(
                 "static configuration read has a blank key".into(),
@@ -354,6 +359,19 @@ pub fn validate_static_facts(facts: &StaticFacts) -> Result<()> {
         validate_fact_location(&artifact.path, &item.path, item.line, &item.reason)?;
     }
     Ok(())
+}
+
+fn configuration_access_is_valid(language: StaticLanguage, access: &str) -> bool {
+    match language {
+        StaticLanguage::Rust => matches!(
+            access,
+            "std::env::var" | "std::env::var_os" | "std::env::vars" | "std::env::vars_os"
+        ),
+        StaticLanguage::Python => matches!(access, "os.getenv" | "os.environ.get" | "os.environ"),
+        StaticLanguage::Toml => access == "toml",
+        StaticLanguage::Json => access == "json",
+        StaticLanguage::Unsupported => false,
+    }
 }
 
 fn analyze_rust(path: &str, text: &str) -> Result<StaticFacts> {
@@ -1845,6 +1863,18 @@ mod tests {
 
         facts.symbols[0].path = "other.rs".into();
         assert!(validate_static_facts(&facts).is_err());
+
+        let mut forged_configuration = analyze_artifact("src/config.rs", "fn run() {}").unwrap();
+        forged_configuration
+            .configuration_reads
+            .push(StaticConfigurationRead {
+                path: "src/config.rs".into(),
+                symbol: Some("run".into()),
+                access: "json".into(),
+                key: Some("server.port".into()),
+                line: 1,
+            });
+        assert!(validate_static_facts(&forged_configuration).is_err());
     }
 
     #[test]
