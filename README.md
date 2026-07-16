@@ -156,6 +156,22 @@ mapping status: Mapped
 `server.port` → config/runtime.json:1 (Configuration)
 ```
 
+### See incomplete proof stay unproven
+
+```sh
+cargo run -p bar-coverage --example proof_assessment
+```
+
+The example maps `authorize` but deliberately leaves `audit` absent. Its
+assessment remains unproven and names the gap instead of treating one matching
+symbol as support for the whole contract:
+
+```text
+mapping status: PartiallyMapped
+proof status: Unproven
+unresolved: audit
+```
+
 ### Verify a checkout
 
 ```sh

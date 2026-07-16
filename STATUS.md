@@ -33,7 +33,8 @@ review is still pending.
   returns only `mapped`, `test_supported`, `unproven`, or `stale` at this stage:
   every explicit reference must map before a partial trace can claim mapping or
   test support, and a symbol or config mapping never becomes static or runtime
-  proof by implication.
+  proof by implication. The `proof_assessment` example demonstrates that
+  incomplete mapping stays unproven and reports its unresolved references.
 - `bar-store` migration `0013` persists immutable proof-obligation declarations
   bound to one contract fingerprint, target, revision, and exact freshness
   revision. Insert and audit are atomic; exact replay revalidates, changed
