@@ -172,6 +172,7 @@ pub fn assess_proof_obligation(
     evaluated_revision: &RevisionId,
 ) -> Result<ProofAssessment> {
     validate_proof_obligation(obligation)?;
+    validate_contract_traceability(traceability)?;
     if obligation.contract_fingerprint != traceability.contract_fingerprint {
         return Err(Error::Corrupt(
             "proof obligation does not match traceability contract".into(),
@@ -636,6 +637,21 @@ mod tests {
             }],
         };
         assert!(super::validate_contract_traceability(&empty_ambiguity).is_err());
+    }
+
+    #[test]
+    fn proof_assessment_rejects_inconsistent_traceability() {
+        let contract = Sha256Digest::from_bytes([9; 32]);
+        let obligation = ProofObligation {
+            proof_id: ProofId::generate(),
+            contract_id: ContractId::generate(),
+            contract_fingerprint: contract,
+            required_evidence_levels: vec![EvidenceKind::Code],
+            freshness_revision: revision(1),
+        };
+        let mut traceability = mapped_trace(contract, TraceTargetKind::Symbol);
+        traceability.status = MappingStatus::Unmapped;
+        assert!(assess_proof_obligation(&obligation, &traceability, &revision(1)).is_err());
     }
 
     #[test]
