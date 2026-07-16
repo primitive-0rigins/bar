@@ -1,5 +1,7 @@
 # BAR — Behavioral Assurance Runtime
 
+[![CI](https://github.com/primitive-0rigins/bar/actions/workflows/ci.yml/badge.svg)](https://github.com/primitive-0rigins/bar/actions/workflows/ci.yml)
+
 A lightweight, model-optional assurance daemon written in Rust. You point it at
 one or more software runtimes; it learns each runtime's *intended* behavior from
 the runtime itself, compares that intent against implementation and live
@@ -127,7 +129,18 @@ cargo run -p bar-audit --example tamper_evidence
 The example seals a ruling, an approval, and an evidence mutation into the
 chain, verifies the intact chain, then tampers with the "stored" records three
 ways — rewriting an approval, deleting a ruling, and reordering events — and
-shows verification refuse each one with the exact reason.
+shows verification refuse each one with the exact reason:
+
+```text
+sealed #0 ruling            ruled ambiguous retry contract as intended-once
+sealed #1 approval          approved repair job within reviewed scope
+sealed #2 evidence_mutation invalidated stale coverage evidence after repair
+
+intact: chain verifies
+edited record: REFUSED — corrupt input: audit record 1 content does not match its hash
+deleted record: REFUSED — corrupt input: audit record at position 0 has seq 1
+reordered records: REFUSED — corrupt input: audit record at position 1 has seq 2
+```
 
 ### Verify a checkout
 
