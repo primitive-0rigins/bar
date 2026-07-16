@@ -1,0 +1,17 @@
+[package]
+name = "bar-coverage"
+description = "Deterministic contract traceability for the Behavioral Assurance Runtime (spec §10, Phase 6)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+bar-contract.workspace = true
+bar-core.workspace = true
+bar-static.workspace = true
+
+[lints]
+workspace = true

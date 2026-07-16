@@ -7,13 +7,14 @@ execution, prepares repair-ready findings, waits for **human approval**, hands
 approved work to a connected coding agent, and then independently verifies the
 result.
 
-> **Status:** Phase 5 — static architecture adapter v1 — is in progress. Phase
-> 4 contract scope, temporal resolution, and adjudication are complete and
-> human-reviewed. The Phase 5 foundation now defines shadow-only static facts
-> for Rust/Python artifacts and records unsupported or uncertain code explicitly;
-> the final Tree-sitter adapter remains the next implementation step. Build
-> progresses through the phased manual in [`docs/spec.md`](docs/spec.md) §21;
-> see [`STATUS.md`](STATUS.md) for current work and completion evidence.
+> **Status:** Phase 6 — traceability and proof obligations — has begun with a
+> deterministic contract-to-code mapping foundation. Phase 5’s Rust/Python
+> static architecture adapter is implemented and awaiting human review. It
+> persists artifact/revision-bound shadow facts and records unsupported or
+> uncertain code explicitly. Daemon watchers and target scheduling remain later
+> orchestration work. Build progresses through the phased manual in
+> [`docs/spec.md`](docs/spec.md) §21; see [`STATUS.md`](STATUS.md) for current
+> work and completion evidence.
 
 ## What it is
 
@@ -70,6 +71,7 @@ bar/
 │   ├── bar-discovery/ # incremental inventory and dependency-aware reparse plans
 │   ├── bar-contract/  # source-bound claims, hierarchy, glossary, conflicts
 │   ├── bar-static/    # shadow static architecture facts (Phase 5 foundation)
+│   ├── bar-coverage/  # deterministic contract-to-static-fact traceability
 │   ├── bar-bench/     # resource benchmark harness (spec §4, §22)
 │   └── bar-daemon/    # the mandatory model-free process (spec §5.1)
 ├── migrations/        # root SQL migrations, embedded at compile time
@@ -121,6 +123,7 @@ CI runs the same format, lint, and test gates on every pull request. See
   specification and build manual (the contract this repo is built against).
 - [`STATUS.md`](STATUS.md) — current phase, delivered evidence, and known debt.
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — development and review expectations.
+- [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md) — community participation standards.
 - [`SECURITY.md`](SECURITY.md) — vulnerability reporting policy.
 
 ## License

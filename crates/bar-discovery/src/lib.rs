@@ -318,6 +318,79 @@ fn read_and_hash(
     Ok((head, digest.to_string(), size_bytes, modified_at_ms))
 }
 
+/// Reopens one already-inventoried artifact and returns its exact bytes only if
+/// it remains inside `root`, retains the recorded size, and still matches the
+/// inventory digest. Consumers that derive source-bound facts use this instead
+/// of trusting a path observed during an earlier scan.
+pub fn read_artifact(
+    root: &Path,
+    artifact: &DiscoveredArtifact,
+    max_file_bytes: u64,
+) -> Result<Vec<u8>> {
+    dependency::validate_logical_path(&artifact.logical_path)?;
+    if artifact.content_sha256 == UNHASHED_OVERSIZED {
+        return Err(bar_core::Error::Corrupt(
+            "cannot read an unhashed oversized artifact".into(),
+        ));
+    }
+    let expected_digest: Sha256Digest = artifact.content_sha256.parse()?;
+    let root = std::fs::canonicalize(root).map_err(|error| {
+        bar_core::Error::Target(format!(
+            "cannot resolve target root {}: {error}",
+            root.display()
+        ))
+    })?;
+    if !root.is_dir() {
+        return Err(bar_core::Error::Target(format!(
+            "target root {} is not a directory",
+            root.display()
+        )));
+    }
+    if artifact.size_bytes > max_file_bytes {
+        return Err(bar_core::Error::Corrupt(
+            "artifact exceeds static-analysis size limit".into(),
+        ));
+    }
+    let real = std::fs::canonicalize(root.join(&artifact.logical_path)).map_err(|error| {
+        bar_core::Error::Target(format!(
+            "cannot resolve artifact {}: {error}",
+            artifact.logical_path
+        ))
+    })?;
+    if !real.starts_with(&root) {
+        return Err(bar_core::Error::Target(format!(
+            "artifact {} escapes target root",
+            artifact.logical_path
+        )));
+    }
+    let file = std::fs::File::open(real)
+        .map_err(|error| bar_core::Error::Target(format!("open artifact: {error}")))?;
+    let metadata = file
+        .metadata()
+        .map_err(|error| bar_core::Error::Target(format!("stat artifact: {error}")))?;
+    if !metadata.is_file() || metadata.len() != artifact.size_bytes {
+        return Err(bar_core::Error::Corrupt(
+            "artifact changed type or size after inventory".into(),
+        ));
+    }
+    let mut bytes = Vec::new();
+    file.take(artifact.size_bytes.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|error| bar_core::Error::Target(format!("read artifact: {error}")))?;
+    if u64::try_from(bytes.len()).ok() != Some(artifact.size_bytes) {
+        return Err(bar_core::Error::Corrupt(
+            "artifact changed size while being read".into(),
+        ));
+    }
+    let digest = Sha256Digest::from_bytes(Sha256::digest(&bytes).into());
+    if digest != expected_digest {
+        return Err(bar_core::Error::Corrupt(
+            "artifact content no longer matches inventory".into(),
+        ));
+    }
+    Ok(bytes)
+}
+
 /// Builds a [`PriorInventory`] from a resulting [`Inventory`] — the shape the
 /// store persists and reloads. Useful in tests and for callers that keep the
 /// last inventory in memory.

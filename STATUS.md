@@ -2,34 +2,103 @@
 
 Living status of the Behavioral Assurance Runtime build. Newest first.
 
-## Current phase: 5 — Static architecture adapter v1 (in progress)
+## Current phase: 6 — Traceability and proof obligations (foundation in progress)
 
 Phase 4 implementation is complete: scope precedence, temporal validity,
-supersession, and operator adjudication are durable and fail safe. Phase 5 has
-started with shadow-only static architecture facts while keeping unknown code
-explicit.
+supersession, and operator adjudication are durable and fail safe. Phase 5
+delivers shadow-only static architecture facts while keeping unknown code
+explicit. Its completion record is
+[`docs/phase-evidence/phase-5.md`](docs/phase-evidence/phase-5.md); human
+review is still pending.
 
-### Phase 5 started
+### Phase 6 started
+
+- `bar-coverage` maps only explicit closed Markdown code spans in a source-bound
+  contract statement to one unique, validated static symbol, test, or literal
+  environment key. The result retains target artifact/path/line provenance;
+  plain-language matches are not considered evidence.
+- Missing and duplicate references remain distinct `missing` or `ambiguous`
+  unresolved results. A separate closed mapping status distinguishes unmapped,
+  ambiguous, partially mapped, and mapped contracts; it is not the existing
+  proof status, so mapped never implies proven.
+- `Store::map_contract_traceability` joins persisted contracts with validated
+  static facts for one exact target revision. It is a read-only shadow seam:
+  cross-target/revision data is excluded before mapping, stored facts are
+  revalidated on load, and traceability emits no audit mutation.
+- `bar-coverage::ProofObligation` declares required evidence levels against an
+  exact source-contract fingerprint and revision. Its evaluator returns only
+  `mapped`, `test_supported`, `unproven`, or `stale` at this stage: a symbol or
+  config mapping never becomes static or runtime proof by implication.
+- `bar-store` migration `0013` persists immutable proof-obligation declarations
+  bound to one contract fingerprint, target, revision, and exact freshness
+  revision. Insert and audit are atomic; exact replay revalidates, changed
+  replay and cross-target binding fail, and unknown persisted evidence tokens
+  fail closed on reload.
+- `Store::assess_persisted_proof_obligation` reloads that declaration, rebuilds
+  traceability from the same validated target revision, and returns a fresh
+  assessment without persisting or auditing a derived proof status.
+- Richer freshness policies, non-environment configuration, and broader
+  contract-to-code semantics remain Phase 6 work.
+
+### Phase 5 delivered
 
 - `bar-static` defines the Appendix I `StaticFacts` shape for artifacts,
   symbols, references, call edges, state definitions, effects, tests,
   configuration reads, and uncertainty.
-- The initial adapter accepts Rust and Python source artifacts, rejects unsafe
-  target-controlled paths, marks unsupported languages as explicit
-  `unsupported_language` uncertainty, and records dynamic dispatch, macros, and
-  dynamic Python lookup as uncertainty instead of guessing.
-- The first deterministic extraction pass covers modules, imports/uses,
-  functions, classes, traits, impls, Rust state enums, Python state constants,
-  tests, simple call edges, and the closed Appendix I effect catalog entries
-  visible in the fixture corpus.
+- The adapter accepts Rust and Python source artifacts through their Tree-sitter
+  grammars, rejects unsafe target-controlled paths, marks unsupported languages
+  as explicit `unsupported_language` uncertainty, and records syntax errors,
+  dynamic dispatch, macros, dynamic Python lookup, and unresolved dynamic calls
+  instead of guessing.
+- Syntax-node extraction covers modules, imports/uses, functions, classes,
+  traits, impls, Rust state enums, Python state constants, tests, call edges,
+  decorators, and the effect catalog entries visible in the fixture corpus.
+  Comments and string literals no longer create false symbols, calls, or effects.
 - `fixtures/phase-5-static` adds Rust and Python fixture sources plus a golden
-  graph-shape fixture. The new crate tests prove fixture extraction, fail-safe
-  path handling, and unsupported-language uncertainty.
+  graph-shape fixture. The crate tests prove fixture extraction, fail-safe path
+  handling, unsupported-language uncertainty, syntax uncertainty, and rejection
+  of comment/string decoys.
+- `bar-store` migration `0012` persists exactly one serialized `StaticFacts`
+  result for an already-inventoried artifact. Insert and audit are atomic;
+  exact replay is a revalidated no-op; altered replay, cross-target/revision
+  binding, unknown JSON fields, and corrupted source paths fail closed on write
+  or reload.
+- `bar-static::analyze_inventory` is the scan-ready, shadow-only batch seam.
+  It reopens each code/test artifact through discovery's containment, size, and
+  digest checks before parsing, excludes non-code inventory, and returns source
+  drift, unreadable files, and non-UTF-8 code as explicit per-artifact failures
+  without aborting the remaining batch.
+- `Store::persist_static_batch` connects successful batch members to the
+  artifact-bound store, reports inserted versus replayed facts, and returns the
+  unchanged per-artifact failures to the caller. Storage or provenance faults
+  remain hard errors instead of being misrepresented as analysis failures.
+- Direct effects now propagate through unique, certain intra-artifact calls to
+  a fixed point. The adapter caps propagation at 64 iterations and records an
+  explicit uncertainty if the cap is reached; dynamic, macro, and ambiguous
+  calls never receive invented summaries.
+- Configuration reads are source-bound for a closed set of environment access
+  forms: Rust `std::env::{var,var_os,vars,vars_os}` and Python `os.getenv`,
+  `os.environ.get`, and `os.environ[...]`. Direct unescaped quoted keys are
+  retained for traceability; dynamic keys and unknown framework-specific access
+  are deliberately left unmapped.
+- Authority checks are typed, source-bound facts for an exact guard-call
+  vocabulary: `authorize`, `check_permission`, `has_permission`,
+  `require_permission`, `require_role`, `is_authorized`, and
+  `user.has_permission`. The adapter does not infer authority from generic
+  naming or framework conventions outside that set.
+- State transitions are typed, source-bound facts when a `.state` or `.status`
+  field receives a qualified variant of a declared Rust enum or Python
+  `*State`/`*Status` enum class in the same artifact. Ordinary assignments and
+  unrecognized lifecycle conventions remain unmapped.
+- Data edges are typed, source-bound facts for simple Rust/Python bindings and
+  direct-call results. The adapter records the enclosing function, source,
+  destination, and line, but deliberately skips literals, destructuring,
+  compound expressions, and dynamic values rather than inventing lineage.
 
-Current limitation: this is a dependency-free foundation for the static facts
-contract, not the final Tree-sitter adapter required before Phase 5 completion.
-The next increment should replace the line scanner with Rust/Python Tree-sitter
-parsers, then persist/reload static facts once the schema is designed.
+Current limitation: the bootstrap daemon has no target-monitoring scheduler or
+registered-target service yet. That orchestration requires a target lifecycle
+and is deferred beyond this shadow-only adapter phase; the completed library
+seam is exercised end-to-end by the Phase 5 fixture tests.
 
 ### Phase 4 delivered
 

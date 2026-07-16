@@ -33,12 +33,20 @@ use sqlx::{FromRow, Transaction};
 
 mod attestation;
 mod context_resolution;
+mod proof_obligations;
 mod ruling;
 mod scope_context;
+mod static_facts;
+mod traceability;
 
 pub use attestation::{ScopeContextAttestationPersistence, StoredScopeContextAttestation};
+pub use proof_obligations::{
+    ProofObligationPersistence, StoredProofAssessment, StoredProofObligation,
+};
 pub use ruling::{RulingPersistence, StoredContractRuling};
 pub use scope_context::{ScopeContextPersistence, StoredScopeContextEvidence};
+pub use static_facts::{StaticBatchPersistence, StaticFactsPersistence, StoredStaticFacts};
+pub use traceability::StoredContractTraceability;
 
 /// A handle to the BAR relational store.
 #[derive(Clone)]
@@ -624,6 +632,29 @@ impl Store {
         .fetch_all(&self.pool)
         .await
         .map_err(storage("load contracts"))?;
+        rows.into_iter().map(ContractRow::into_contract).collect()
+    }
+
+    /// Loads source-bound shadow contracts for exactly one target revision.
+    /// Traceability uses this stricter form so identical content-derived
+    /// revision identifiers cannot cross a target boundary.
+    pub async fn load_contracts_for_target(
+        &self,
+        target_id: &TargetId,
+        revision_id: &RevisionId,
+    ) -> Result<Vec<StoredContract>> {
+        let rows: Vec<ContractRow> = sqlx::query_as(
+            "SELECT c.contract_id, c.level, c.normative_kind, c.statement, c.fingerprint, \
+                    c.confidence, c.freshness, c.status, s.artifact_id, s.start_offset, \
+                    s.end_offset, s.exact_text_sha256 \
+             FROM contracts c JOIN contract_sources s ON s.contract_id = c.contract_id \
+             WHERE c.target_id = ? AND c.revision_id = ? ORDER BY c.contract_id, s.start_offset",
+        )
+        .bind(target_id.to_string())
+        .bind(revision_id.to_string())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(storage("load target contracts"))?;
         rows.into_iter().map(ContractRow::into_contract).collect()
     }
 
@@ -1982,6 +2013,295 @@ mod tests {
             .await
             .unwrap();
         assert!(store.load_inventory(&rev_id).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn static_facts_are_artifact_bound_replay_safe_and_reload_verified() {
+        let repo = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(repo.path()).unwrap();
+        let source = b"pub fn write() { std::fs::write(\"out\", b\"ok\").unwrap(); }";
+        write_file(&root, "src/main.rs", source);
+
+        let (store, _dir) = temp_store().await;
+        let target_id = store
+            .register_target(&tree_target(&root), T0)
+            .await
+            .unwrap()
+            .target_id;
+        let revision_id = store
+            .record_revision(&target_id, &revision("static", None), T0)
+            .await
+            .unwrap()
+            .revision_id;
+        let inventory = bar_discovery::scan(
+            &root,
+            &bar_discovery::ScanConfig::default(),
+            &PriorInventory::new(),
+        )
+        .unwrap();
+        store
+            .persist_inventory(&target_id, &revision_id, &inventory, T0)
+            .await
+            .unwrap();
+        let batch = bar_static::analyze_inventory(&root, &inventory, &revision_id).unwrap();
+        assert!(batch.failures.is_empty());
+        let artifact_id = batch.facts[0].artifact_id;
+        let facts = batch.facts[0].facts.clone();
+        let first = store
+            .persist_static_batch(&target_id, &revision_id, &batch, T0 + 1)
+            .await
+            .unwrap();
+        assert_eq!(first.inserted, 1);
+        assert_eq!(first.existing, 0);
+        let replay = store
+            .persist_static_batch(&target_id, &revision_id, &batch, T0 + 2)
+            .await
+            .unwrap();
+        assert_eq!(replay.inserted, 0);
+        assert_eq!(replay.existing, 1);
+        let loaded = store.load_static_facts(&artifact_id).await.unwrap();
+        assert_eq!(loaded.target_id, target_id);
+        assert_eq!(loaded.revision_id, revision_id);
+        assert_eq!(loaded.facts, facts);
+
+        assert!(store
+            .persist_static_facts(
+                &TargetId::generate(),
+                &revision_id,
+                &artifact_id,
+                &facts,
+                T0 + 3,
+            )
+            .await
+            .is_err());
+        sqlx::query("UPDATE static_facts SET facts_json = ? WHERE artifact_id = ?")
+            .bind(r#"{"artifacts":[]}"#)
+            .bind(artifact_id.to_string())
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        assert!(store.load_static_facts(&artifact_id).await.is_err());
+
+        let chain = store.load_audit_chain().await.unwrap();
+        chain.verify().unwrap();
+        assert_eq!(
+            chain.len(),
+            5,
+            "only the first static-facts write is audited"
+        );
+    }
+
+    #[tokio::test]
+    async fn traceability_maps_persisted_contracts_to_revision_bound_static_facts() {
+        let repo = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(repo.path()).unwrap();
+        let document = "Requests MUST call `authorize`.\n";
+        write_file(&root, "README.md", document.as_bytes());
+        write_file(&root, "src/auth.rs", b"pub fn authorize() {}\n");
+
+        let (store, _dir) = temp_store().await;
+        let target_id = store
+            .register_target(&tree_target(&root), T0)
+            .await
+            .unwrap()
+            .target_id;
+        let revision_id = store
+            .record_revision(&target_id, &revision("traceability", None), T0)
+            .await
+            .unwrap()
+            .revision_id;
+        let inventory = bar_discovery::scan(
+            &root,
+            &bar_discovery::ScanConfig::default(),
+            &PriorInventory::new(),
+        )
+        .unwrap();
+        store
+            .persist_inventory(&target_id, &revision_id, &inventory, T0)
+            .await
+            .unwrap();
+        let document_artifact = inventory
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.logical_path == "README.md")
+            .unwrap();
+        let document_text = bar_contract::ArtifactText::new(
+            document_artifact.artifact_id(&revision_id),
+            &document_artifact.logical_path,
+            document_artifact.content_sha256.parse().unwrap(),
+            document,
+        )
+        .unwrap();
+        let contracts = bar_contract::extract_deterministic(&document_text).unwrap();
+        let persisted = store
+            .persist_contracts(&target_id, &revision_id, &contracts, T0 + 1)
+            .await
+            .unwrap();
+        let batch = bar_static::analyze_inventory(&root, &inventory, &revision_id).unwrap();
+        store
+            .persist_static_batch(&target_id, &revision_id, &batch, T0 + 2)
+            .await
+            .unwrap();
+
+        let traces = store
+            .map_contract_traceability(&target_id, &revision_id)
+            .await
+            .unwrap();
+        assert_eq!(traces.len(), 1);
+        assert_eq!(traces[0].contract.contract_id, persisted.contract_ids[0]);
+        assert_eq!(
+            traces[0].traceability.status,
+            bar_coverage::MappingStatus::Mapped
+        );
+        assert_eq!(traces[0].traceability.mappings[0].reference, "authorize");
+        assert_eq!(
+            traces[0].traceability.mappings[0].target.path,
+            "src/auth.rs"
+        );
+
+        let obligation = bar_coverage::ProofObligation {
+            proof_id: bar_core::ProofId::generate(),
+            contract_fingerprint: traces[0].contract.claim.fingerprint,
+            required_evidence_levels: vec![bar_core::EvidenceKind::Code],
+            freshness_revision: revision_id,
+        };
+        assert!(
+            store
+                .persist_proof_obligation(
+                    &target_id,
+                    &revision_id,
+                    &persisted.contract_ids[0],
+                    &obligation,
+                    T0 + 3,
+                )
+                .await
+                .unwrap()
+                .inserted
+        );
+        assert!(
+            !store
+                .persist_proof_obligation(
+                    &target_id,
+                    &revision_id,
+                    &persisted.contract_ids[0],
+                    &obligation,
+                    T0 + 4,
+                )
+                .await
+                .unwrap()
+                .inserted
+        );
+        let loaded_obligation = store
+            .load_proof_obligation(&obligation.proof_id)
+            .await
+            .unwrap();
+        assert_eq!(loaded_obligation.contract_id, persisted.contract_ids[0]);
+        assert_eq!(loaded_obligation.obligation, obligation);
+        let assessed = store
+            .assess_persisted_proof_obligation(&obligation.proof_id)
+            .await
+            .unwrap();
+        assert_eq!(assessed.proof, loaded_obligation);
+        assert_eq!(
+            assessed.traceability.status,
+            bar_coverage::MappingStatus::Mapped
+        );
+        assert_eq!(assessed.assessment.status, bar_core::ProofStatus::Mapped);
+        assert!(store
+            .persist_proof_obligation(
+                &TargetId::generate(),
+                &revision_id,
+                &persisted.contract_ids[0],
+                &obligation,
+                T0 + 5,
+            )
+            .await
+            .is_err());
+        sqlx::query("UPDATE proof_obligations SET required_evidence_json = ? WHERE proof_id = ?")
+            .bind(r#"["forged"]"#)
+            .bind(obligation.proof_id.to_string())
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        assert!(store
+            .load_proof_obligation(&obligation.proof_id)
+            .await
+            .is_err());
+
+        let chain = store.load_audit_chain().await.unwrap();
+        chain.verify().unwrap();
+        assert_eq!(
+            chain.len(),
+            7,
+            "only the proof declaration mutates the audit chain"
+        );
+    }
+
+    #[tokio::test]
+    async fn traceability_maps_literal_configuration_keys_from_persisted_static_facts() {
+        let repo = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(repo.path()).unwrap();
+        let document = "Runtime MUST read `MODE`.\n";
+        write_file(&root, "README.md", document.as_bytes());
+        write_file(
+            &root,
+            "src/config.rs",
+            b"pub fn mode() { let _ = std::env::var(\"MODE\"); }\n",
+        );
+
+        let (store, _dir) = temp_store().await;
+        let target_id = store
+            .register_target(&tree_target(&root), T0)
+            .await
+            .unwrap()
+            .target_id;
+        let revision_id = store
+            .record_revision(&target_id, &revision("config-traceability", None), T0)
+            .await
+            .unwrap()
+            .revision_id;
+        let inventory = bar_discovery::scan(
+            &root,
+            &bar_discovery::ScanConfig::default(),
+            &PriorInventory::new(),
+        )
+        .unwrap();
+        store
+            .persist_inventory(&target_id, &revision_id, &inventory, T0)
+            .await
+            .unwrap();
+        let document_artifact = inventory
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.logical_path == "README.md")
+            .unwrap();
+        let document_text = bar_contract::ArtifactText::new(
+            document_artifact.artifact_id(&revision_id),
+            &document_artifact.logical_path,
+            document_artifact.content_sha256.parse().unwrap(),
+            document,
+        )
+        .unwrap();
+        let contracts = bar_contract::extract_deterministic(&document_text).unwrap();
+        store
+            .persist_contracts(&target_id, &revision_id, &contracts, T0 + 1)
+            .await
+            .unwrap();
+        let batch = bar_static::analyze_inventory(&root, &inventory, &revision_id).unwrap();
+        store
+            .persist_static_batch(&target_id, &revision_id, &batch, T0 + 2)
+            .await
+            .unwrap();
+
+        let traces = store
+            .map_contract_traceability(&target_id, &revision_id)
+            .await
+            .unwrap();
+        assert_eq!(traces[0].traceability.mappings[0].reference, "MODE");
+        assert_eq!(
+            traces[0].traceability.mappings[0].target.kind,
+            bar_coverage::TraceTargetKind::Configuration
+        );
     }
 
     #[tokio::test]

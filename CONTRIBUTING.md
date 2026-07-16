@@ -34,3 +34,4 @@ Update [`STATUS.md`](STATUS.md) when a phase item is completed.
   a change pass.
 - Do not report vulnerabilities in public issues or pull requests; follow
   [`SECURITY.md`](SECURITY.md) instead.
+- Participate according to the [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md).

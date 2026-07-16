@@ -9,6 +9,7 @@ members = [
     "crates/bar-discovery",
     "crates/bar-contract",
     "crates/bar-static",
+    "crates/bar-coverage",
     "crates/bar-bench",
     "crates/bar-daemon",
 ]
@@ -31,6 +32,7 @@ bar-target = { path = "crates/bar-target" }
 bar-discovery = { path = "crates/bar-discovery" }
 bar-contract = { path = "crates/bar-contract" }
 bar-static = { path = "crates/bar-static" }
+bar-coverage = { path = "crates/bar-coverage" }
 uuid = { version = "1", features = ["v4"] }
 sha2 = "0.11"
 serde = { version = "1", features = ["derive"] }
@@ -41,6 +43,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 sqlx = { version = "0.9", features = ["runtime-tokio", "sqlite", "postgres", "migrate"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 tempfile = "3"
+tree-sitter = "0.25.10"
+tree-sitter-python = "0.25.0"
+tree-sitter-rust = "0.24.2"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
