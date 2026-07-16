@@ -47,7 +47,10 @@ pub use proof_obligations::{
 pub use ruling::{RulingPersistence, StoredContractRuling};
 pub use scope_context::{ScopeContextPersistence, StoredScopeContextEvidence};
 pub use static_facts::{StaticBatchPersistence, StaticFactsPersistence, StoredStaticFacts};
-pub use static_findings::{StaticFindingCandidatePersistence, StoredStaticFindingCandidate};
+pub use static_findings::{
+    StaticFindingCandidateBatchPersistence, StaticFindingCandidatePersistence,
+    StoredStaticFindingCandidate,
+};
 pub use traceability::StoredContractTraceability;
 
 /// A handle to the BAR relational store.
@@ -2376,16 +2379,45 @@ mod tests {
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].contract_id, persisted.contract_ids[0]);
         assert_eq!(candidates[0].missing_references, ["audit"]);
+        let mut invalid = candidates[0].clone();
+        invalid.fingerprint = Sha256Digest::from_bytes([9; 32]);
+        assert!(store
+            .persist_static_finding_candidates(
+                &target_id,
+                &revision_id,
+                &[candidates[0].clone(), invalid],
+                T0 + 3,
+            )
+            .await
+            .is_err());
+        assert!(store
+            .load_static_finding_candidates_for_revision(&target_id, &revision_id)
+            .await
+            .unwrap()
+            .is_empty());
+        assert_eq!(store.load_audit_chain().await.unwrap().len(), before.len());
         let first = store
-            .persist_static_finding_candidate(&target_id, &revision_id, &candidates[0], T0 + 3)
+            .persist_static_finding_candidates(&target_id, &revision_id, &candidates, T0 + 4)
             .await
             .unwrap();
         let replay = store
-            .persist_static_finding_candidate(&target_id, &revision_id, &candidates[0], T0 + 4)
+            .persist_static_finding_candidates(&target_id, &revision_id, &candidates, T0 + 5)
             .await
             .unwrap();
-        assert!(first.inserted);
-        assert!(!replay.inserted);
+        assert_eq!(
+            first,
+            StaticFindingCandidateBatchPersistence {
+                inserted: 1,
+                existing: 0,
+            }
+        );
+        assert_eq!(
+            replay,
+            StaticFindingCandidateBatchPersistence {
+                inserted: 0,
+                existing: 1,
+            }
+        );
         assert_eq!(
             store
                 .load_static_finding_candidate(&candidates[0].fingerprint)
@@ -2395,8 +2427,18 @@ mod tests {
                 target_id,
                 revision_id,
                 candidate: candidates[0].clone(),
-                created_at_ms: T0 + 3,
+                created_at_ms: T0 + 4,
             }
+        );
+        assert_eq!(
+            store
+                .load_static_finding_candidates_for_revision(&target_id, &revision_id)
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|stored| stored.candidate)
+                .collect::<Vec<_>>(),
+            candidates
         );
         let after = store.load_audit_chain().await.unwrap();
         after.verify().unwrap();
@@ -2407,7 +2449,7 @@ mod tests {
                 &TargetId::generate(),
                 &revision_id,
                 &candidates[0],
-                T0 + 5,
+                T0 + 6,
             )
             .await
             .is_err());

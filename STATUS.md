@@ -46,8 +46,11 @@ review is still pending.
   unmapped contracts do not become findings. Migration `0014` persists each
   validated candidate immutably against its contract, source, target, and
   revision; writes and their audit event are atomic, and only an exact,
-  revalidated replay is accepted. Finding lifecycle and false-positive
-  correction remain Phase 7 work.
+  revalidated replay is accepted. A candidate batch validates its full input
+  before it writes, so a bad member cannot leave a partial scan result.
+  Revision-scoped retrieval revalidates every returned record before later
+  review work can use it. Finding lifecycle and false-positive correction
+  remain Phase 7 work.
 - Richer freshness policies, non-environment configuration, and broader
   contract-to-code semantics remain Phase 6 work.
 

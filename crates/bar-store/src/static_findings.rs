@@ -1,10 +1,13 @@
 //! Durable, revision-bound shadow static-finding candidates (Phase 7).
 
+use std::collections::BTreeSet;
+
 use bar_audit::{AuditCategory, AuditEvent};
 use bar_contract::SourceRef;
 use bar_core::{ContractId, Error, Result, RevisionId, Sha256Digest, TargetId};
 use bar_findings::{validate_static_finding_candidate, StaticFindingCandidate, StaticFindingKind};
-use sqlx::FromRow;
+use sqlx::sqlite::Sqlite;
+use sqlx::{FromRow, Transaction};
 
 use crate::{
     append_audit, required_sqlite_u64, required_sqlite_usize, storage, Store, SYSTEM_ACTOR,
@@ -14,6 +17,13 @@ use crate::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StaticFindingCandidatePersistence {
     pub inserted: bool,
+}
+
+/// Result of atomically persisting a candidate set for one revision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StaticFindingCandidateBatchPersistence {
+    pub inserted: usize,
+    pub existing: usize,
 }
 
 /// Reloaded shadow candidate with its target and revision provenance.
@@ -45,6 +55,33 @@ struct StaticFindingCandidateRow {
     source_bound: i64,
 }
 
+struct StaticFindingCandidateSubmission<'a> {
+    candidate: &'a StaticFindingCandidate,
+    source_start: i64,
+    source_end: i64,
+    missing_references_json: String,
+}
+
+impl<'a> StaticFindingCandidateSubmission<'a> {
+    fn new(candidate: &'a StaticFindingCandidate) -> Result<Self> {
+        validate_static_finding_candidate(candidate)?;
+        Ok(Self {
+            candidate,
+            source_start: required_sqlite_usize(
+                candidate.source.start_offset,
+                "static finding candidate source start",
+            )?,
+            source_end: required_sqlite_usize(
+                candidate.source.end_offset,
+                "static finding candidate source end",
+            )?,
+            missing_references_json: serde_json::to_string(&candidate.missing_references).map_err(
+                |error| Error::Corrupt(format!("serialize missing references: {error}")),
+            )?,
+        })
+    }
+}
+
 impl Store {
     /// Persists one detector candidate only when it exactly matches a
     /// source-bound contract in the supplied target revision. Exact replay is
@@ -56,25 +93,145 @@ impl Store {
         candidate: &StaticFindingCandidate,
         now_ms: u64,
     ) -> Result<StaticFindingCandidatePersistence> {
-        validate_static_finding_candidate(candidate)?;
-        let created_at = required_sqlite_u64(now_ms, "static finding candidate timestamp")?;
-        let source_start = required_sqlite_usize(
-            candidate.source.start_offset,
-            "static finding candidate source start",
-        )?;
-        let source_end = required_sqlite_usize(
-            candidate.source.end_offset,
-            "static finding candidate source end",
-        )?;
-        let missing_references_json = serde_json::to_string(&candidate.missing_references)
-            .map_err(|error| Error::Corrupt(format!("serialize missing references: {error}")))?;
-        let mut tx = self.pool.begin().await.map_err(storage("begin"))?;
+        let result = self
+            .persist_static_finding_candidates(
+                target_id,
+                revision_id,
+                std::slice::from_ref(candidate),
+                now_ms,
+            )
+            .await?;
+        Ok(StaticFindingCandidatePersistence {
+            inserted: result.inserted == 1,
+        })
+    }
 
+    /// Atomically persists a detector result for one target revision. Every
+    /// candidate is validated and bound before any row or audit event is
+    /// written, so a bad later candidate cannot leave a partial scan result.
+    pub async fn persist_static_finding_candidates(
+        &self,
+        target_id: &TargetId,
+        revision_id: &RevisionId,
+        candidates: &[StaticFindingCandidate],
+        now_ms: u64,
+    ) -> Result<StaticFindingCandidateBatchPersistence> {
+        let created_at = required_sqlite_u64(now_ms, "static finding candidate timestamp")?;
+        let mut fingerprints = BTreeSet::new();
+        let mut submissions = Vec::with_capacity(candidates.len());
+        for candidate in candidates {
+            if !fingerprints.insert(candidate.fingerprint) {
+                return Err(Error::Corrupt(
+                    "static finding candidate batch repeats a fingerprint".into(),
+                ));
+            }
+            submissions.push(StaticFindingCandidateSubmission::new(candidate)?);
+        }
+
+        let mut tx = self.pool.begin().await.map_err(storage("begin"))?;
+        let mut existing = Vec::with_capacity(submissions.len());
+        for submission in &submissions {
+            Self::verify_static_finding_candidate_binding(
+                &mut tx,
+                target_id,
+                revision_id,
+                submission,
+            )
+            .await?;
+            let row_exists: Option<i64> =
+                sqlx::query_scalar("SELECT 1 FROM static_finding_candidates WHERE fingerprint = ?")
+                    .bind(submission.candidate.fingerprint.to_string())
+                    .fetch_optional(&mut *tx)
+                    .await
+                    .map_err(storage("load static-finding candidate"))?;
+            existing.push(row_exists.is_some());
+        }
+        tx.commit().await.map_err(storage("commit"))?;
+
+        for (submission, row_exists) in submissions.iter().zip(&existing) {
+            if *row_exists {
+                let persisted = self
+                    .load_static_finding_candidate(&submission.candidate.fingerprint)
+                    .await?;
+                if persisted.target_id != *target_id
+                    || persisted.revision_id != *revision_id
+                    || persisted.candidate != *submission.candidate
+                {
+                    return Err(Error::Corrupt(
+                        "persisted static finding candidate does not match the submitted candidate"
+                            .into(),
+                    ));
+                }
+            }
+        }
+
+        let mut tx = self.pool.begin().await.map_err(storage("begin"))?;
+        let mut inserted = 0;
+        for (submission, row_exists) in submissions.iter().zip(existing) {
+            if row_exists {
+                continue;
+            }
+            Self::verify_static_finding_candidate_binding(
+                &mut tx,
+                target_id,
+                revision_id,
+                submission,
+            )
+            .await?;
+            sqlx::query(
+                "INSERT INTO static_finding_candidates \
+                 (fingerprint, kind, contract_id, target_id, revision_id, contract_fingerprint, \
+                  source_artifact_id, source_start_offset, source_end_offset, source_exact_text_sha256, \
+                  missing_references_json, created_at_ms) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(submission.candidate.fingerprint.to_string())
+            .bind(submission.candidate.kind.as_str())
+            .bind(submission.candidate.contract_id.to_string())
+            .bind(target_id.to_string())
+            .bind(revision_id.to_string())
+            .bind(submission.candidate.contract_fingerprint.to_string())
+            .bind(submission.candidate.source.artifact_id.to_string())
+            .bind(submission.source_start)
+            .bind(submission.source_end)
+            .bind(submission.candidate.source.exact_text_sha256.to_string())
+            .bind(&submission.missing_references_json)
+            .bind(created_at)
+            .execute(&mut *tx)
+            .await
+            .map_err(storage("insert static-finding candidate"))?;
+            append_audit(
+                &mut tx,
+                AuditEvent {
+                    category: AuditCategory::EvidenceMutation,
+                    actor: SYSTEM_ACTOR.to_string(),
+                    summary: "persisted shadow static-finding candidate".into(),
+                    subject: Some(submission.candidate.fingerprint.to_string()),
+                    occurred_at_ms: now_ms,
+                },
+            )
+            .await?;
+            inserted += 1;
+        }
+        tx.commit().await.map_err(storage("commit"))?;
+        Ok(StaticFindingCandidateBatchPersistence {
+            inserted,
+            existing: submissions.len() - inserted,
+        })
+    }
+
+    async fn verify_static_finding_candidate_binding(
+        tx: &mut Transaction<'_, Sqlite>,
+        target_id: &TargetId,
+        revision_id: &RevisionId,
+        submission: &StaticFindingCandidateSubmission<'_>,
+    ) -> Result<()> {
+        let candidate = submission.candidate;
         let contract: Option<(String, String, String)> = sqlx::query_as(
             "SELECT target_id, revision_id, fingerprint FROM contracts WHERE contract_id = ?",
         )
         .bind(candidate.contract_id.to_string())
-        .fetch_optional(&mut *tx)
+        .fetch_optional(&mut **tx)
         .await
         .map_err(storage("load static-finding contract"))?;
         let (stored_target, stored_revision, stored_fingerprint) = contract.ok_or_else(|| {
@@ -92,7 +249,6 @@ impl Store {
                     .into(),
             ));
         }
-
         let source_bound: Option<i64> = sqlx::query_scalar(
             "SELECT 1 FROM contract_sources \
              WHERE contract_id = ? AND artifact_id = ? AND start_offset = ? \
@@ -100,10 +256,10 @@ impl Store {
         )
         .bind(candidate.contract_id.to_string())
         .bind(candidate.source.artifact_id.to_string())
-        .bind(source_start)
-        .bind(source_end)
+        .bind(submission.source_start)
+        .bind(submission.source_end)
         .bind(candidate.source.exact_text_sha256.to_string())
-        .fetch_optional(&mut *tx)
+        .fetch_optional(&mut **tx)
         .await
         .map_err(storage("load static-finding source"))?;
         if source_bound.is_none() {
@@ -111,65 +267,7 @@ impl Store {
                 "static finding candidate source does not match its contract".into(),
             ));
         }
-
-        let existing: Option<i64> =
-            sqlx::query_scalar("SELECT 1 FROM static_finding_candidates WHERE fingerprint = ?")
-                .bind(candidate.fingerprint.to_string())
-                .fetch_optional(&mut *tx)
-                .await
-                .map_err(storage("load static-finding candidate"))?;
-        if existing.is_some() {
-            tx.commit().await.map_err(storage("commit"))?;
-            let persisted = self
-                .load_static_finding_candidate(&candidate.fingerprint)
-                .await?;
-            if persisted.target_id != *target_id
-                || persisted.revision_id != *revision_id
-                || persisted.candidate != *candidate
-            {
-                return Err(Error::Corrupt(
-                    "persisted static finding candidate does not match the submitted candidate"
-                        .into(),
-                ));
-            }
-            return Ok(StaticFindingCandidatePersistence { inserted: false });
-        }
-
-        sqlx::query(
-            "INSERT INTO static_finding_candidates \
-             (fingerprint, kind, contract_id, target_id, revision_id, contract_fingerprint, \
-              source_artifact_id, source_start_offset, source_end_offset, source_exact_text_sha256, \
-              missing_references_json, created_at_ms) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(candidate.fingerprint.to_string())
-        .bind(candidate.kind.as_str())
-        .bind(candidate.contract_id.to_string())
-        .bind(target_id.to_string())
-        .bind(revision_id.to_string())
-        .bind(candidate.contract_fingerprint.to_string())
-        .bind(candidate.source.artifact_id.to_string())
-        .bind(source_start)
-        .bind(source_end)
-        .bind(candidate.source.exact_text_sha256.to_string())
-        .bind(missing_references_json)
-        .bind(created_at)
-        .execute(&mut *tx)
-        .await
-        .map_err(storage("insert static-finding candidate"))?;
-        append_audit(
-            &mut tx,
-            AuditEvent {
-                category: AuditCategory::EvidenceMutation,
-                actor: SYSTEM_ACTOR.to_string(),
-                summary: "persisted shadow static-finding candidate".into(),
-                subject: Some(candidate.fingerprint.to_string()),
-                occurred_at_ms: now_ms,
-            },
-        )
-        .await?;
-        tx.commit().await.map_err(storage("commit"))?;
-        Ok(StaticFindingCandidatePersistence { inserted: true })
+        Ok(())
     }
 
     /// Reloads and revalidates one immutable shadow candidate before exposing
@@ -203,6 +301,38 @@ impl Store {
             Error::Corrupt(format!("unknown static finding candidate {fingerprint}"))
         })?;
         row.into_stored(fingerprint)
+    }
+
+    /// Reloads every validated shadow candidate for exactly one target
+    /// revision. The contract relation is the query boundary so corrupted
+    /// candidate target or revision columns fail during per-record reload.
+    pub async fn load_static_finding_candidates_for_revision(
+        &self,
+        target_id: &TargetId,
+        revision_id: &RevisionId,
+    ) -> Result<Vec<StoredStaticFindingCandidate>> {
+        let fingerprints: Vec<String> = sqlx::query_scalar(
+            "SELECT f.fingerprint FROM static_finding_candidates f \
+             JOIN contracts c ON c.contract_id = f.contract_id \
+             WHERE c.target_id = ? AND c.revision_id = ? ORDER BY f.fingerprint",
+        )
+        .bind(target_id.to_string())
+        .bind(revision_id.to_string())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(storage("load revision static-finding candidates"))?;
+        let mut candidates = Vec::with_capacity(fingerprints.len());
+        for fingerprint in fingerprints {
+            let fingerprint: Sha256Digest = fingerprint.parse()?;
+            let stored = self.load_static_finding_candidate(&fingerprint).await?;
+            if stored.target_id != *target_id || stored.revision_id != *revision_id {
+                return Err(Error::Corrupt(
+                    "revision static finding candidates cross a target or revision boundary".into(),
+                ));
+            }
+            candidates.push(stored);
+        }
+        Ok(candidates)
     }
 }
 
