@@ -46,9 +46,9 @@ review is still pending.
   and returns `stale` when it differs from the declaration's freshness revision.
 - `bar-findings` begins the next shadow-only layer with a deterministic
   missing-implementation candidate detector. It emits only when an explicit
-  source-bound contract reference is absent; prose-only, any contract with an
-  ambiguous reference, and merely unmapped contracts do not become findings.
-  Detector input revalidates that
+  required source-bound contract reference is absent; prose-only, planned,
+  prohibited, or expected contracts, any contract with an ambiguous reference,
+  and merely unmapped contracts do not become findings. Detector input revalidates that
   each source-bound claim's deterministic identity, trace's declared mapping
   status, references from the contract's closed code spans, target names,
   distinct ambiguity candidates, and nonempty source-span provenance match its

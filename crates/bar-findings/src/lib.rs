@@ -8,7 +8,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use bar_contract::{validate_extracted_claim, ExtractedClaim, SourceRef};
-use bar_core::{ContractId, Error, Result, Sha256Digest};
+use bar_core::{ContractId, Error, NormativeKind, Result, Sha256Digest};
 use bar_coverage::{
     explicit_references, validate_contract_traceability, ContractTraceability, UnresolvedReference,
 };
@@ -138,6 +138,9 @@ pub fn detect_missing_implementations(
             return Err(Error::Corrupt(
                 "static finding traceability references do not match its contract".into(),
             ));
+        }
+        if contract.claim.normative_kind != NormativeKind::Required {
+            continue;
         }
         if contract
             .traceability
@@ -353,6 +356,29 @@ mod tests {
         );
 
         assert!(detect_missing_implementations(&[prose, ambiguous, mixed])
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn non_required_contracts_do_not_become_missing_implementation_findings() {
+        let mut planned = contract(
+            "`authorize` will eventually be available.",
+            6,
+            vec![UnresolvedReference::Missing {
+                reference: "authorize".into(),
+            }],
+        );
+        planned.claim.normative_kind = NormativeKind::Planned;
+        planned.claim.fingerprint = claim_fingerprint(
+            planned.claim.normative_kind,
+            planned.claim.level,
+            &planned.claim.statement,
+            &planned.claim.source,
+        );
+        planned.traceability.contract_fingerprint = planned.claim.fingerprint;
+
+        assert!(detect_missing_implementations(&[planned])
             .unwrap()
             .is_empty());
     }
