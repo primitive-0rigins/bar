@@ -64,6 +64,7 @@ pub struct StaticFindingCandidate {
 /// reference set and its deterministic fingerprint.
 pub fn validate_static_finding_candidate(candidate: &StaticFindingCandidate) -> Result<()> {
     if candidate.kind != StaticFindingKind::MissingImplementation
+        || candidate.source.start_offset >= candidate.source.end_offset
         || candidate.missing_references.is_empty()
         || candidate
             .missing_references
@@ -282,6 +283,9 @@ mod tests {
         assert!(validate_static_finding_candidate(&tampered).is_err());
         tampered = candidates[0].clone();
         tampered.source.exact_text_sha256 = Sha256Digest::from_bytes([9; 32]);
+        assert!(validate_static_finding_candidate(&tampered).is_err());
+        tampered = candidates[0].clone();
+        tampered.source.end_offset = tampered.source.start_offset;
         assert!(validate_static_finding_candidate(&tampered).is_err());
     }
 
