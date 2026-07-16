@@ -7,7 +7,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use bar_contract::{ExtractedClaim, SourceRef};
+use bar_contract::{validate_extracted_claim, ExtractedClaim, SourceRef};
 use bar_core::{ContractId, Error, Result, Sha256Digest};
 use bar_coverage::{
     explicit_references, validate_contract_traceability, ContractTraceability, UnresolvedReference,
@@ -106,6 +106,7 @@ pub fn detect_missing_implementations(
                 "static finding input repeats a contract".into(),
             ));
         }
+        validate_extracted_claim(&contract.claim)?;
         if contract.claim.fingerprint != contract.traceability.contract_fingerprint {
             return Err(Error::Corrupt(
                 "static finding traceability does not match its contract".into(),
@@ -355,6 +356,16 @@ mod tests {
             }],
         );
         assert!(detect_missing_implementations(&[forged_reference]).is_err());
+
+        let mut forged_span = contract(
+            "`authorize` is required.",
+            5,
+            vec![UnresolvedReference::Missing {
+                reference: "authorize".into(),
+            }],
+        );
+        forged_span.claim.source.end_offset = forged_span.claim.source.start_offset;
+        assert!(detect_missing_implementations(&[forged_span]).is_err());
     }
 
     #[test]

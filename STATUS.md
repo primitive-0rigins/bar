@@ -47,10 +47,10 @@ review is still pending.
   missing-implementation candidate detector. It emits only when an explicit
   source-bound contract reference is absent; prose-only, ambiguous, and merely
   unmapped contracts do not become findings. Detector input revalidates that
-  each trace's declared mapping status, references from the contract's closed
-  code spans, target names, distinct ambiguity candidates, and source
-  provenance match its resolved and unresolved data before it can become a
-  candidate. Migration `0014` persists each
+  each source-bound claim's deterministic identity, trace's declared mapping
+  status, references from the contract's closed code spans, target names,
+  distinct ambiguity candidates, and source provenance match its resolved and
+  unresolved data before it can become a candidate. Migration `0014` persists each
   validated candidate immutably against its contract, source, target, and
   revision; writes and their audit event are atomic, and only an exact,
   revalidated replay is accepted. A candidate batch validates its full input
