@@ -426,15 +426,8 @@ fn analyze_toml(path: &str, text: &str) -> Result<StaticFacts> {
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
-        if let Some(header) = line
-            .strip_prefix("[[")
-            .and_then(|line| line.strip_suffix("]]"))
-            .or_else(|| {
-                line.strip_prefix('[')
-                    .and_then(|line| line.strip_suffix(']'))
-            })
-        {
-            section = literal_toml_path(header);
+        if line.starts_with('[') {
+            section = toml_header_path(line);
             if section.is_empty() {
                 facts.uncertainty.push(uncertainty(
                     path,
@@ -677,6 +670,28 @@ fn literal_toml_path(value: &str) -> Vec<String> {
         return Vec::new();
     }
     segments.into_iter().map(ToString::to_string).collect()
+}
+
+/// Returns the literal path in a TOML table header. A trailing comment is
+/// valid TOML and does not change the enclosing section for later keys.
+fn toml_header_path(line: &str) -> Vec<String> {
+    let (header, trailing) = if let Some(line) = line.strip_prefix("[[") {
+        match line.split_once("]]") {
+            Some(parts) => parts,
+            None => return Vec::new(),
+        }
+    } else if let Some(line) = line.strip_prefix('[') {
+        match line.split_once(']') {
+            Some(parts) => parts,
+            None => return Vec::new(),
+        }
+    } else {
+        return Vec::new();
+    };
+    if !trailing.trim().is_empty() && !trailing.trim_start().starts_with('#') {
+        return Vec::new();
+    }
+    literal_toml_path(header)
 }
 
 fn parse(text: &str, language: Language) -> Result<tree_sitter::Tree> {
@@ -1639,7 +1654,7 @@ mod tests {
     fn valid_toml_keys_are_source_bound_without_guessing_quoted_keys() {
         let facts = analyze_artifact(
             "config/runtime.toml",
-            "[server]\nport = 8080\nquoted = \"value\"\n[worker]\n\"queue.name\" = \"jobs\"\n",
+            "[server] # listener settings\nport = 8080\nquoted = \"value\"\n[worker]\n\"queue.name\" = \"jobs\"\n",
         )
         .unwrap();
 

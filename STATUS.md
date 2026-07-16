@@ -16,9 +16,10 @@ review is still pending.
 - `bar-coverage` maps only explicit closed Markdown code spans in a source-bound
   contract statement to one unique, validated static symbol, test, literal
   environment key, literal TOML key, or literal JSON object key. TOML and JSON
-  keys are analyzed only after the complete document parses; quoted and escaped
-  keys remain unmapped. The result retains target artifact/path/line provenance;
-  plain-language matches are not considered evidence.
+  keys are analyzed only after the complete document parses; literal TOML table
+  headers retain their section even with a trailing comment, while quoted and
+  escaped keys remain unmapped. The result retains target artifact/path/line
+  provenance; plain-language matches are not considered evidence.
 - Missing and duplicate references remain distinct `missing` or `ambiguous`
   unresolved results. A separate closed mapping status distinguishes unmapped,
   ambiguous, partially mapped, and mapped contracts; it is not the existing
