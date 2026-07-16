@@ -172,7 +172,7 @@ fn hash_part(hasher: &mut Sha256, bytes: &[u8]) {
 mod tests {
     use bar_contract::{ExtractedClaim, SourceRef};
     use bar_core::{ArtifactId, ContractLevel, NormativeKind, Sha256Digest};
-    use bar_coverage::{MappingStatus, UnresolvedReference};
+    use bar_coverage::{MappingStatus, TraceTarget, TraceTargetKind, UnresolvedReference};
 
     use super::{
         detect_missing_implementations, validate_static_finding_candidate, ContractTraceability,
@@ -259,7 +259,13 @@ mod tests {
             2,
             vec![UnresolvedReference::Ambiguous {
                 reference: "authorize".into(),
-                candidates: Vec::new(),
+                candidates: vec![TraceTarget {
+                    artifact_id: ArtifactId::from_digest(Sha256Digest::from_bytes([2; 32])),
+                    path: "src/auth.rs".into(),
+                    name: "authorize".into(),
+                    line: 1,
+                    kind: TraceTargetKind::Symbol,
+                }],
             }],
         );
 

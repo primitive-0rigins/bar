@@ -116,6 +116,50 @@ pub fn validate_contract_traceability(traceability: &ContractTraceability) -> Re
             "traceability status does not match its mappings and unresolved references".into(),
         ));
     }
+    let mut references = BTreeSet::new();
+    for mapping in &traceability.mappings {
+        validate_trace_reference(&mapping.reference, &mut references)?;
+        validate_trace_target(&mapping.target)?;
+    }
+    for unresolved in &traceability.unresolved {
+        match unresolved {
+            UnresolvedReference::Missing { reference } => {
+                validate_trace_reference(reference, &mut references)?;
+            }
+            UnresolvedReference::Ambiguous {
+                reference,
+                candidates,
+            } => {
+                validate_trace_reference(reference, &mut references)?;
+                if candidates.is_empty() {
+                    return Err(Error::Corrupt(
+                        "ambiguous traceability reference has no candidates".into(),
+                    ));
+                }
+                for candidate in candidates {
+                    validate_trace_target(candidate)?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_trace_reference(reference: &str, references: &mut BTreeSet<String>) -> Result<()> {
+    if reference.is_empty() || !references.insert(reference.to_string()) {
+        return Err(Error::Corrupt(
+            "traceability references must be nonempty and unique".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_trace_target(target: &TraceTarget) -> Result<()> {
+    if target.path.is_empty() || target.name.is_empty() || target.line == 0 {
+        return Err(Error::Corrupt(
+            "traceability target lacks source provenance".into(),
+        ));
+    }
     Ok(())
 }
 
@@ -573,6 +617,25 @@ mod tests {
             [UnresolvedReference::Ambiguous { reference, candidates }]
                 if reference == "port" && candidates.len() == 2
         ));
+    }
+
+    #[test]
+    fn traceability_validation_rejects_duplicate_and_empty_input() {
+        let contract = Sha256Digest::from_bytes([9; 32]);
+        let mut duplicate = mapped_trace(contract, TraceTargetKind::Symbol);
+        duplicate.mappings.push(duplicate.mappings[0].clone());
+        assert!(super::validate_contract_traceability(&duplicate).is_err());
+
+        let empty_ambiguity = ContractTraceability {
+            contract_fingerprint: contract,
+            status: MappingStatus::Ambiguous,
+            mappings: Vec::new(),
+            unresolved: vec![UnresolvedReference::Ambiguous {
+                reference: "authorize".into(),
+                candidates: Vec::new(),
+            }],
+        };
+        assert!(super::validate_contract_traceability(&empty_ambiguity).is_err());
     }
 
     #[test]
