@@ -9,7 +9,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use bar_contract::{ExtractedClaim, SourceRef};
 use bar_core::{ContractId, Error, Result, Sha256Digest};
-use bar_coverage::{validate_contract_traceability, ContractTraceability, UnresolvedReference};
+use bar_coverage::{
+    explicit_references, validate_contract_traceability, ContractTraceability, UnresolvedReference,
+};
 use sha2::{Digest, Sha256};
 
 /// A source-bound contract paired with its deterministic traceability result.
@@ -110,6 +112,31 @@ pub fn detect_missing_implementations(
             ));
         }
         validate_contract_traceability(&contract.traceability)?;
+        let traced_references = contract
+            .traceability
+            .mappings
+            .iter()
+            .map(|mapping| mapping.reference.clone())
+            .chain(
+                contract
+                    .traceability
+                    .unresolved
+                    .iter()
+                    .map(|reference| match reference {
+                        UnresolvedReference::Missing { reference }
+                        | UnresolvedReference::Ambiguous { reference, .. } => reference.clone(),
+                    }),
+            )
+            .collect::<BTreeSet<_>>();
+        if traced_references
+            != explicit_references(&contract.claim.statement)
+                .into_iter()
+                .collect()
+        {
+            return Err(Error::Corrupt(
+                "static finding traceability references do not match its contract".into(),
+            ));
+        }
         let missing_references = contract
             .traceability
             .unresolved
@@ -313,6 +340,15 @@ mod tests {
         );
         inconsistent.traceability.status = MappingStatus::Mapped;
         assert!(detect_missing_implementations(&[inconsistent]).is_err());
+
+        let forged_reference = contract(
+            "`authorize` is required.",
+            4,
+            vec![UnresolvedReference::Missing {
+                reference: "audit".into(),
+            }],
+        );
+        assert!(detect_missing_implementations(&[forged_reference]).is_err());
     }
 
     #[test]

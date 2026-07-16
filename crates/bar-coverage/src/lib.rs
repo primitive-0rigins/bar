@@ -373,7 +373,9 @@ fn mapping_status(mappings: &[TraceMapping], unresolved: &[UnresolvedReference])
     }
 }
 
-fn explicit_references(statement: &str) -> Vec<String> {
+/// Returns the unique, closed Markdown code spans that may participate in
+/// deterministic traceability for one contract statement.
+pub fn explicit_references(statement: &str) -> Vec<String> {
     let mut spans = statement.split('`');
     let _ = spans.next();
     let mut references = BTreeSet::new();
