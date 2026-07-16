@@ -107,6 +107,18 @@ pub fn map_explicit_references(
         .collect())
 }
 
+/// Rejects a traceability result whose declared completeness status does not
+/// match its resolved and unresolved references. Consumers use this before
+/// deriving findings from a trace supplied across a crate boundary.
+pub fn validate_contract_traceability(traceability: &ContractTraceability) -> Result<()> {
+    if traceability.status != mapping_status(&traceability.mappings, &traceability.unresolved) {
+        return Err(Error::Corrupt(
+            "traceability status does not match its mappings and unresolved references".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Evaluates an explicit trace against a declared, exact-revision evidence
 /// requirement. Stale inputs take precedence over mapping support; unsatisfied
 /// requirements remain `Unproven` rather than becoming a weaker proof claim.
@@ -283,7 +295,17 @@ fn map_claim(
             None => unresolved.push(UnresolvedReference::Missing { reference }),
         }
     }
-    let status = if mappings.is_empty() {
+    let status = mapping_status(&mappings, &unresolved);
+    ContractTraceability {
+        contract_fingerprint: claim.fingerprint,
+        status,
+        mappings,
+        unresolved,
+    }
+}
+
+fn mapping_status(mappings: &[TraceMapping], unresolved: &[UnresolvedReference]) -> MappingStatus {
+    if mappings.is_empty() {
         if unresolved
             .iter()
             .any(|reference| matches!(reference, UnresolvedReference::Ambiguous { .. }))
@@ -296,12 +318,6 @@ fn map_claim(
         MappingStatus::Mapped
     } else {
         MappingStatus::PartiallyMapped
-    };
-    ContractTraceability {
-        contract_fingerprint: claim.fingerprint,
-        status,
-        mappings,
-        unresolved,
     }
 }
 

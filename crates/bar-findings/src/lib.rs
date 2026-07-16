@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use bar_contract::{ExtractedClaim, SourceRef};
 use bar_core::{ContractId, Error, Result, Sha256Digest};
-use bar_coverage::{ContractTraceability, UnresolvedReference};
+use bar_coverage::{validate_contract_traceability, ContractTraceability, UnresolvedReference};
 use sha2::{Digest, Sha256};
 
 /// A source-bound contract paired with its deterministic traceability result.
@@ -109,6 +109,7 @@ pub fn detect_missing_implementations(
                 "static finding traceability does not match its contract".into(),
             ));
         }
+        validate_contract_traceability(&contract.traceability)?;
         let missing_references = contract
             .traceability
             .unresolved
@@ -184,6 +185,14 @@ mod tests {
         unresolved: Vec<UnresolvedReference>,
     ) -> TraceableContract {
         let fingerprint = Sha256Digest::from_bytes([byte; 32]);
+        let status = if unresolved
+            .iter()
+            .any(|reference| matches!(reference, UnresolvedReference::Ambiguous { .. }))
+        {
+            MappingStatus::Ambiguous
+        } else {
+            MappingStatus::Unmapped
+        };
         TraceableContract {
             contract_id: bar_core::ContractId::generate(),
             claim: ExtractedClaim {
@@ -200,7 +209,7 @@ mod tests {
             },
             traceability: ContractTraceability {
                 contract_fingerprint: fingerprint,
-                status: MappingStatus::Unmapped,
+                status,
                 mappings: Vec::new(),
                 unresolved,
             },
@@ -279,6 +288,16 @@ mod tests {
             }],
         );
         assert!(detect_missing_implementations(&[repeated.clone(), repeated]).is_err());
+
+        let mut inconsistent = contract(
+            "`authorize` is required.",
+            3,
+            vec![UnresolvedReference::Missing {
+                reference: "authorize".into(),
+            }],
+        );
+        inconsistent.traceability.status = MappingStatus::Mapped;
+        assert!(detect_missing_implementations(&[inconsistent]).is_err());
     }
 
     #[test]
