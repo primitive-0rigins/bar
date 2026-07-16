@@ -26,17 +26,25 @@ review is still pending.
   cross-target/revision data is excluded before mapping, stored facts are
   revalidated on load, and traceability emits no audit mutation.
 - `bar-coverage::ProofObligation` declares required evidence levels against an
-  exact source-contract fingerprint and revision. Its evaluator returns only
-  `mapped`, `test_supported`, `unproven`, or `stale` at this stage: a symbol or
-  config mapping never becomes static or runtime proof by implication.
+  exact contract ID, source-contract fingerprint, and revision. Its evaluator
+  returns only `mapped`, `test_supported`, `unproven`, or `stale` at this stage:
+  a symbol or config mapping never becomes static or runtime proof by
+  implication.
 - `bar-store` migration `0013` persists immutable proof-obligation declarations
   bound to one contract fingerprint, target, revision, and exact freshness
   revision. Insert and audit are atomic; exact replay revalidates, changed
   replay and cross-target binding fail, and unknown persisted evidence tokens
   fail closed on reload.
 - `Store::assess_persisted_proof_obligation` reloads that declaration, rebuilds
-  traceability from the same validated target revision, and returns a fresh
-  assessment without persisting or auditing a derived proof status.
+  traceability from the stored source revision, and returns a fresh assessment
+  without persisting or auditing a derived proof status. Its explicit
+  revision-assessment variant accepts only another known revision of that target
+  and returns `stale` when it differs from the declaration's freshness revision.
+- `bar-findings` begins the next shadow-only layer with a deterministic
+  missing-implementation candidate detector. It emits only when an explicit
+  source-bound contract reference is absent; prose-only, ambiguous, and merely
+  unmapped contracts do not become findings. Persistence, lifecycle, and
+  false-positive correction remain Phase 7 work.
 - Richer freshness policies, non-environment configuration, and broader
   contract-to-code semantics remain Phase 6 work.
 

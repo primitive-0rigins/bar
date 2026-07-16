@@ -18,10 +18,9 @@ pub struct ProofObligationPersistence {
     pub inserted: bool,
 }
 
-/// Reloaded proof obligation with its contract and revision provenance.
+/// Reloaded proof obligation with its revision provenance.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoredProofObligation {
-    pub contract_id: ContractId,
     pub target_id: TargetId,
     pub revision_id: RevisionId,
     pub obligation: ProofObligation,
@@ -33,6 +32,7 @@ pub struct StoredProofObligation {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoredProofAssessment {
     pub proof: StoredProofObligation,
+    pub evaluated_revision: RevisionId,
     pub traceability: ContractTraceability,
     pub assessment: ProofAssessment,
 }
@@ -60,7 +60,6 @@ impl Store {
         &self,
         target_id: &TargetId,
         revision_id: &RevisionId,
-        contract_id: &ContractId,
         obligation: &ProofObligation,
         now_ms: u64,
     ) -> Result<ProofObligationPersistence> {
@@ -76,13 +75,14 @@ impl Store {
         let contract: Option<(String, String, String)> = sqlx::query_as(
             "SELECT target_id, revision_id, fingerprint FROM contracts WHERE contract_id = ?",
         )
-        .bind(contract_id.to_string())
+        .bind(obligation.contract_id.to_string())
         .fetch_optional(&mut *tx)
         .await
         .map_err(storage("load proof contract"))?;
         let (stored_target, stored_revision, stored_fingerprint) = contract.ok_or_else(|| {
             Error::Corrupt(format!(
-                "proof obligation references unknown contract {contract_id}"
+                "proof obligation references unknown contract {}",
+                obligation.contract_id
             ))
         })?;
         if stored_target != target_id.to_string()
@@ -105,7 +105,7 @@ impl Store {
         .map_err(storage("load proof obligation"))?;
         if let Some(existing) = existing {
             let expected = (
-                contract_id.to_string(),
+                obligation.contract_id.to_string(),
                 target_id.to_string(),
                 revision_id.to_string(),
                 obligation.contract_fingerprint.to_string(),
@@ -127,7 +127,7 @@ impl Store {
              VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(obligation.proof_id.to_string())
-        .bind(contract_id.to_string())
+        .bind(obligation.contract_id.to_string())
         .bind(target_id.to_string())
         .bind(revision_id.to_string())
         .bind(obligation.contract_fingerprint.to_string())
@@ -179,11 +179,48 @@ impl Store {
         proof_id: &ProofId,
     ) -> Result<StoredProofAssessment> {
         let proof = self.load_proof_obligation(proof_id).await?;
+        let evaluated_revision = proof.revision_id;
+        self.assess_loaded_proof_obligation(proof, &evaluated_revision)
+            .await
+    }
+
+    /// Rebuilds traceability from a proof declaration's stored revision and
+    /// assesses it at another known revision of the same target. A different
+    /// revision therefore yields `stale` without treating old mappings as
+    /// current evidence.
+    pub async fn assess_persisted_proof_obligation_at_revision(
+        &self,
+        proof_id: &ProofId,
+        evaluated_revision: &RevisionId,
+    ) -> Result<StoredProofAssessment> {
+        let proof = self.load_proof_obligation(proof_id).await?;
+        self.assess_loaded_proof_obligation(proof, evaluated_revision)
+            .await
+    }
+
+    async fn assess_loaded_proof_obligation(
+        &self,
+        proof: StoredProofObligation,
+        evaluated_revision: &RevisionId,
+    ) -> Result<StoredProofAssessment> {
+        let revision_exists: Option<i64> = sqlx::query_scalar(
+            "SELECT 1 FROM target_revisions WHERE target_id = ? AND revision_id = ?",
+        )
+        .bind(proof.target_id.to_string())
+        .bind(evaluated_revision.to_string())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(storage("load proof assessment revision"))?;
+        if revision_exists.is_none() {
+            return Err(Error::Corrupt(
+                "proof assessment revision does not belong to its target".into(),
+            ));
+        }
         let traceability = self
             .map_contract_traceability(&proof.target_id, &proof.revision_id)
             .await?
             .into_iter()
-            .find(|trace| trace.contract.contract_id == proof.contract_id)
+            .find(|trace| trace.contract.contract_id == proof.obligation.contract_id)
             .map(|trace| trace.traceability)
             .ok_or_else(|| {
                 Error::Corrupt(format!(
@@ -192,9 +229,10 @@ impl Store {
                 ))
             })?;
         let assessment =
-            assess_proof_obligation(&proof.obligation, &traceability, &proof.revision_id)?;
+            assess_proof_obligation(&proof.obligation, &traceability, evaluated_revision)?;
         Ok(StoredProofAssessment {
             proof,
+            evaluated_revision: *evaluated_revision,
             traceability,
             assessment,
         })
@@ -220,6 +258,7 @@ impl ProofObligationRow {
         }
         let obligation = ProofObligation {
             proof_id,
+            contract_id,
             contract_fingerprint,
             required_evidence_levels: parse_evidence_json(&self.required_evidence_json)?,
             freshness_revision: self.freshness_revision_id.parse()?,
@@ -231,7 +270,6 @@ impl ProofObligationRow {
         }
         validate_proof_obligation(&obligation)?;
         Ok(StoredProofObligation {
-            contract_id,
             target_id,
             revision_id,
             obligation,

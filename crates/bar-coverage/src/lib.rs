@@ -9,7 +9,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use bar_contract::ExtractedClaim;
 use bar_core::{
-    ArtifactId, Error, EvidenceKind, ProofId, ProofStatus, Result, RevisionId, Sha256Digest,
+    ArtifactId, ContractId, Error, EvidenceKind, ProofId, ProofStatus, Result, RevisionId,
+    Sha256Digest,
 };
 use bar_static::{validate_static_facts, StaticArtifactFacts, StaticTest};
 
@@ -76,6 +77,7 @@ pub struct ContractTraceability {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProofObligation {
     pub proof_id: ProofId,
+    pub contract_id: ContractId,
     pub contract_fingerprint: Sha256Digest,
     pub required_evidence_levels: Vec<EvidenceKind>,
     pub freshness_revision: RevisionId,
@@ -321,8 +323,8 @@ fn explicit_references(statement: &str) -> Vec<String> {
 mod tests {
     use bar_contract::{ExtractedClaim, SourceRef};
     use bar_core::{
-        ArtifactId, ContractLevel, EvidenceKind, NormativeKind, ProofId, ProofStatus, RevisionId,
-        Sha256Digest,
+        ArtifactId, ContractId, ContractLevel, EvidenceKind, NormativeKind, ProofId, ProofStatus,
+        RevisionId, Sha256Digest,
     };
     use bar_static::{
         StaticArtifact, StaticArtifactFacts, StaticConfigurationRead, StaticFacts, StaticLanguage,
@@ -509,6 +511,7 @@ mod tests {
         let contract = Sha256Digest::from_bytes([9; 32]);
         let obligation = ProofObligation {
             proof_id: ProofId::generate(),
+            contract_id: ContractId::generate(),
             contract_fingerprint: contract,
             required_evidence_levels: vec![EvidenceKind::Code, EvidenceKind::UnitTest],
             freshness_revision: revision(1),
@@ -540,6 +543,7 @@ mod tests {
         let contract = Sha256Digest::from_bytes([9; 32]);
         let obligation = ProofObligation {
             proof_id: ProofId::generate(),
+            contract_id: ContractId::generate(),
             contract_fingerprint: contract,
             required_evidence_levels: vec![EvidenceKind::Configuration],
             freshness_revision: revision(1),

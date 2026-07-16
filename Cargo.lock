@@ -102,6 +102,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "bar-findings"
+version = "0.0.0"
+dependencies = [
+ "bar-contract",
+ "bar-core",
+ "bar-coverage",
+ "sha2 0.11.0",
+]
+
+[[package]]
 name = "bar-static"
 version = "0.0.0"
 dependencies = [
@@ -124,6 +134,7 @@ dependencies = [
  "bar-core",
  "bar-coverage",
  "bar-discovery",
+ "bar-findings",
  "bar-static",
  "bar-target",
  "serde_json",

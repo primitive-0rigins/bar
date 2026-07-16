@@ -2,6 +2,7 @@
 
 use bar_core::{Result, RevisionId, TargetId};
 use bar_coverage::{map_explicit_references, ContractTraceability};
+use bar_findings::{detect_missing_implementations, StaticFindingCandidate, TraceableContract};
 use bar_static::StaticArtifactFacts;
 
 use crate::{Store, StoredContract};
@@ -47,5 +48,26 @@ impl Store {
                 traceability,
             })
             .collect())
+    }
+
+    /// Returns missing-implementation candidates derived from persisted,
+    /// revision-bound traceability. This is read-only shadow analysis: it does
+    /// not persist a finding or mutate the audit chain.
+    pub async fn missing_implementation_candidates(
+        &self,
+        target_id: &TargetId,
+        revision_id: &RevisionId,
+    ) -> Result<Vec<StaticFindingCandidate>> {
+        let contracts = self
+            .map_contract_traceability(target_id, revision_id)
+            .await?
+            .into_iter()
+            .map(|stored| TraceableContract {
+                contract_id: stored.contract.contract_id,
+                claim: stored.contract.claim,
+                traceability: stored.traceability,
+            })
+            .collect::<Vec<_>>();
+        detect_missing_implementations(&contracts)
     }
 }

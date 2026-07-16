@@ -1,0 +1,18 @@
+[package]
+name = "bar-findings"
+description = "Deterministic shadow static-finding candidates for the Behavioral Assurance Runtime (Phase 7)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+bar-contract.workspace = true
+bar-core.workspace = true
+bar-coverage.workspace = true
+sha2.workspace = true
+
+[lints]
+workspace = true

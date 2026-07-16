@@ -10,6 +10,7 @@ members = [
     "crates/bar-contract",
     "crates/bar-static",
     "crates/bar-coverage",
+    "crates/bar-findings",
     "crates/bar-bench",
     "crates/bar-daemon",
 ]
@@ -33,6 +34,7 @@ bar-discovery = { path = "crates/bar-discovery" }
 bar-contract = { path = "crates/bar-contract" }
 bar-static = { path = "crates/bar-static" }
 bar-coverage = { path = "crates/bar-coverage" }
+bar-findings = { path = "crates/bar-findings" }
 uuid = { version = "1", features = ["v4"] }
 sha2 = "0.11"
 serde = { version = "1", features = ["derive"] }

@@ -11,7 +11,9 @@ result.
 > deterministic contract-to-code mapping foundation. Phase 5’s Rust/Python
 > static architecture adapter is implemented and awaiting human review. It
 > persists artifact/revision-bound shadow facts and records unsupported or
-> uncertain code explicitly. Daemon watchers and target scheduling remain later
+> uncertain code explicitly. A Phase 7 shadow-only missing-implementation
+> candidate detector is also available; it neither persists findings nor grants
+> repair authority. Daemon watchers and target scheduling remain later
 > orchestration work. Build progresses through the phased manual in
 > [`docs/spec.md`](docs/spec.md) §21; see [`STATUS.md`](STATUS.md) for current
 > work and completion evidence.
@@ -72,6 +74,7 @@ bar/
 │   ├── bar-contract/  # source-bound claims, hierarchy, glossary, conflicts
 │   ├── bar-static/    # shadow static architecture facts (Phase 5 foundation)
 │   ├── bar-coverage/  # deterministic contract-to-static-fact traceability
+│   ├── bar-findings/  # shadow static-finding candidates (Phase 7 foundation)
 │   ├── bar-bench/     # resource benchmark harness (spec §4, §22)
 │   └── bar-daemon/    # the mandatory model-free process (spec §5.1)
 ├── migrations/        # root SQL migrations, embedded at compile time

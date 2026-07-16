@@ -16,6 +16,7 @@ bar-discovery.workspace = true
 bar-contract.workspace = true
 bar-static.workspace = true
 bar-coverage.workspace = true
+bar-findings.workspace = true
 serde_json.workspace = true
 sqlx.workspace = true
 

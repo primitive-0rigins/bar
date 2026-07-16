@@ -2161,32 +2161,21 @@ mod tests {
 
         let obligation = bar_coverage::ProofObligation {
             proof_id: bar_core::ProofId::generate(),
+            contract_id: persisted.contract_ids[0],
             contract_fingerprint: traces[0].contract.claim.fingerprint,
             required_evidence_levels: vec![bar_core::EvidenceKind::Code],
             freshness_revision: revision_id,
         };
         assert!(
             store
-                .persist_proof_obligation(
-                    &target_id,
-                    &revision_id,
-                    &persisted.contract_ids[0],
-                    &obligation,
-                    T0 + 3,
-                )
+                .persist_proof_obligation(&target_id, &revision_id, &obligation, T0 + 3,)
                 .await
                 .unwrap()
                 .inserted
         );
         assert!(
             !store
-                .persist_proof_obligation(
-                    &target_id,
-                    &revision_id,
-                    &persisted.contract_ids[0],
-                    &obligation,
-                    T0 + 4,
-                )
+                .persist_proof_obligation(&target_id, &revision_id, &obligation, T0 + 4,)
                 .await
                 .unwrap()
                 .inserted
@@ -2195,7 +2184,6 @@ mod tests {
             .load_proof_obligation(&obligation.proof_id)
             .await
             .unwrap();
-        assert_eq!(loaded_obligation.contract_id, persisted.contract_ids[0]);
         assert_eq!(loaded_obligation.obligation, obligation);
         let assessed = store
             .assess_persisted_proof_obligation(&obligation.proof_id)
@@ -2207,14 +2195,36 @@ mod tests {
             bar_coverage::MappingStatus::Mapped
         );
         assert_eq!(assessed.assessment.status, bar_core::ProofStatus::Mapped);
+        assert_eq!(assessed.evaluated_revision, revision_id);
+        let later_revision = store
+            .record_revision(&target_id, &revision("traceability-later", None), T0 + 5)
+            .await
+            .unwrap()
+            .revision_id;
+        let stale = store
+            .assess_persisted_proof_obligation_at_revision(&obligation.proof_id, &later_revision)
+            .await
+            .unwrap();
+        assert_eq!(stale.evaluated_revision, later_revision);
+        assert_eq!(stale.assessment.status, bar_core::ProofStatus::Stale);
+        let other_repo = tempfile::tempdir().unwrap();
+        let other_root = std::fs::canonicalize(other_repo.path()).unwrap();
+        let other_target = store
+            .register_target(&tree_target(&other_root), T0 + 6)
+            .await
+            .unwrap()
+            .target_id;
+        let other_revision = store
+            .record_revision(&other_target, &revision("other-target", None), T0 + 6)
+            .await
+            .unwrap()
+            .revision_id;
         assert!(store
-            .persist_proof_obligation(
-                &TargetId::generate(),
-                &revision_id,
-                &persisted.contract_ids[0],
-                &obligation,
-                T0 + 5,
-            )
+            .assess_persisted_proof_obligation_at_revision(&obligation.proof_id, &other_revision)
+            .await
+            .is_err());
+        assert!(store
+            .persist_proof_obligation(&TargetId::generate(), &revision_id, &obligation, T0 + 7,)
             .await
             .is_err());
         sqlx::query("UPDATE proof_obligations SET required_evidence_json = ? WHERE proof_id = ?")
@@ -2232,8 +2242,8 @@ mod tests {
         chain.verify().unwrap();
         assert_eq!(
             chain.len(),
-            7,
-            "only the proof declaration mutates the audit chain"
+            10,
+            "the later revision, other target/revision, and first proof declaration mutate the audit chain"
         );
     }
 
@@ -2302,6 +2312,72 @@ mod tests {
             traces[0].traceability.mappings[0].target.kind,
             bar_coverage::TraceTargetKind::Configuration
         );
+    }
+
+    #[tokio::test]
+    async fn missing_implementation_candidates_are_persisted_and_revision_bound() {
+        let repo = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(repo.path()).unwrap();
+        let document = "Requests MUST call `audit`.\n";
+        write_file(&root, "README.md", document.as_bytes());
+        write_file(&root, "src/service.rs", b"pub fn serve() {}\n");
+
+        let (store, _dir) = temp_store().await;
+        let target_id = store
+            .register_target(&tree_target(&root), T0)
+            .await
+            .unwrap()
+            .target_id;
+        let revision_id = store
+            .record_revision(&target_id, &revision("missing-implementation", None), T0)
+            .await
+            .unwrap()
+            .revision_id;
+        let inventory = bar_discovery::scan(
+            &root,
+            &bar_discovery::ScanConfig::default(),
+            &PriorInventory::new(),
+        )
+        .unwrap();
+        store
+            .persist_inventory(&target_id, &revision_id, &inventory, T0)
+            .await
+            .unwrap();
+        let document_artifact = inventory
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.logical_path == "README.md")
+            .unwrap();
+        let document_text = bar_contract::ArtifactText::new(
+            document_artifact.artifact_id(&revision_id),
+            &document_artifact.logical_path,
+            document_artifact.content_sha256.parse().unwrap(),
+            document,
+        )
+        .unwrap();
+        let contracts = bar_contract::extract_deterministic(&document_text).unwrap();
+        let persisted = store
+            .persist_contracts(&target_id, &revision_id, &contracts, T0 + 1)
+            .await
+            .unwrap();
+        let batch = bar_static::analyze_inventory(&root, &inventory, &revision_id).unwrap();
+        store
+            .persist_static_batch(&target_id, &revision_id, &batch, T0 + 2)
+            .await
+            .unwrap();
+
+        let before = store.load_audit_chain().await.unwrap();
+        let candidates = store
+            .missing_implementation_candidates(&target_id, &revision_id)
+            .await
+            .unwrap();
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].contract_id, persisted.contract_ids[0]);
+        assert_eq!(candidates[0].missing_references, ["audit"]);
+        let after = store.load_audit_chain().await.unwrap();
+        after.verify().unwrap();
+        assert_eq!(after.len(), before.len());
+        assert_eq!(after.tip(), before.tip());
     }
 
     #[tokio::test]
