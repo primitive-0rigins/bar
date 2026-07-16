@@ -139,6 +139,14 @@ pub fn detect_missing_implementations(
                 "static finding traceability references do not match its contract".into(),
             ));
         }
+        if contract
+            .traceability
+            .unresolved
+            .iter()
+            .any(|reference| matches!(reference, UnresolvedReference::Ambiguous { .. }))
+        {
+            continue;
+        }
         let missing_references = contract
             .traceability
             .unresolved
@@ -315,8 +323,36 @@ mod tests {
                 ],
             }],
         );
+        let mixed = contract(
+            "`authorize` and `audit` are required.",
+            4,
+            vec![
+                UnresolvedReference::Missing {
+                    reference: "audit".into(),
+                },
+                UnresolvedReference::Ambiguous {
+                    reference: "authorize".into(),
+                    candidates: vec![
+                        TraceTarget {
+                            artifact_id: ArtifactId::from_digest(Sha256Digest::from_bytes([4; 32])),
+                            path: "src/auth.rs".into(),
+                            name: "authorize".into(),
+                            line: 1,
+                            kind: TraceTargetKind::Symbol,
+                        },
+                        TraceTarget {
+                            artifact_id: ArtifactId::from_digest(Sha256Digest::from_bytes([5; 32])),
+                            path: "src/legacy_auth.rs".into(),
+                            name: "authorize".into(),
+                            line: 1,
+                            kind: TraceTargetKind::Symbol,
+                        },
+                    ],
+                },
+            ],
+        );
 
-        assert!(detect_missing_implementations(&[prose, ambiguous])
+        assert!(detect_missing_implementations(&[prose, ambiguous, mixed])
             .unwrap()
             .is_empty());
     }
