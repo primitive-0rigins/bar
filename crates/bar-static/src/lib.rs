@@ -16,6 +16,7 @@ use tree_sitter::{Language, Node, Parser};
 pub enum StaticLanguage {
     Rust,
     Python,
+    Toml,
     Unsupported,
 }
 
@@ -195,6 +196,7 @@ pub fn analyze_artifact(path: &str, text: &str) -> Result<StaticFacts> {
     match language_for(path) {
         StaticLanguage::Rust => analyze_rust(path, text),
         StaticLanguage::Python => analyze_python(path, text),
+        StaticLanguage::Toml => analyze_toml(path, text),
         StaticLanguage::Unsupported => {
             let mut facts = StaticFacts::for_artifact(path, StaticLanguage::Unsupported);
             facts
@@ -205,10 +207,10 @@ pub fn analyze_artifact(path: &str, text: &str) -> Result<StaticFacts> {
     }
 }
 
-/// Analyzes the code and test artifacts in an inventory. Each source is reopened
-/// through discovery's containment, size, and digest checks before parsing;
-/// source drift and unreadable/non-UTF-8 input become explicit failures while
-/// later artifacts continue to be analyzed.
+/// Analyzes code, test, and configuration artifacts in an inventory. Each source
+/// is reopened through discovery's containment, size, and digest checks before
+/// parsing; source drift and unreadable/non-UTF-8 input become explicit failures
+/// while later artifacts continue to be analyzed.
 pub fn analyze_inventory(
     root: &std::path::Path,
     inventory: &Inventory,
@@ -231,7 +233,7 @@ pub fn analyze_inventory(
     for artifact in inventory.artifacts.iter().filter(|artifact| {
         matches!(
             artifact.artifact_kind,
-            ArtifactKind::Code | ArtifactKind::Test
+            ArtifactKind::Code | ArtifactKind::Test | ArtifactKind::Configuration
         )
     }) {
         let artifact_id = artifact.artifact_id(revision_id);
@@ -399,6 +401,91 @@ fn analyze_python(path: &str, text: &str) -> Result<StaticFacts> {
     retain_known_state_transitions(&mut facts);
     summarize_effects(&mut facts);
     Ok(facts)
+}
+
+/// Extracts only direct, literal TOML keys after the complete document has
+/// parsed successfully. Section-qualified keys are emitted alongside their
+/// bare spelling so a contract can name either `server.port` or `port`; keys
+/// from separate sections remain separate traceability candidates.
+fn analyze_toml(path: &str, text: &str) -> Result<StaticFacts> {
+    toml::from_str::<toml::Value>(text)
+        .map_err(|error| Error::Parse(format!("invalid TOML: {error}")))?;
+    let mut facts = StaticFacts::for_artifact(path, StaticLanguage::Toml);
+    let mut section = Vec::<String>::new();
+    let mut multiline_delimiter = None;
+    for (index, raw_line) in text.lines().enumerate() {
+        if let Some(delimiter) = multiline_delimiter {
+            if raw_line.matches(delimiter).count() % 2 == 1 {
+                multiline_delimiter = None;
+            }
+            continue;
+        }
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some(header) = line
+            .strip_prefix("[[")
+            .and_then(|line| line.strip_suffix("]]"))
+            .or_else(|| {
+                line.strip_prefix('[')
+                    .and_then(|line| line.strip_suffix(']'))
+            })
+        {
+            section = literal_toml_path(header);
+            continue;
+        }
+        let Some((raw_key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let key = literal_toml_path(raw_key);
+        if key.is_empty() {
+            continue;
+        }
+        let full_key = section
+            .iter()
+            .chain(key.iter())
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(".");
+        let line = u32::try_from(index + 1)
+            .map_err(|_| Error::Corrupt("TOML source line exceeds u32".into()))?;
+        for key in [key.join("."), full_key] {
+            if !key.is_empty()
+                && !facts
+                    .configuration_reads
+                    .iter()
+                    .any(|read| read.key.as_deref() == Some(key.as_str()) && read.line == line)
+            {
+                facts.configuration_reads.push(StaticConfigurationRead {
+                    path: path.to_string(),
+                    symbol: None,
+                    access: "toml".into(),
+                    key: Some(key),
+                    line,
+                });
+            }
+        }
+        multiline_delimiter = ["\"\"\"", "'''"]
+            .into_iter()
+            .find(|delimiter| value.matches(delimiter).count() % 2 == 1);
+    }
+    Ok(facts)
+}
+
+/// Returns a closed TOML dotted key path. Quoted or escaped segments are left
+/// unmapped: their spelling cannot be safely reconstructed by this adapter.
+fn literal_toml_path(value: &str) -> Vec<String> {
+    let segments = value.trim().split('.').map(str::trim).collect::<Vec<_>>();
+    if segments.iter().any(|segment| {
+        segment.is_empty()
+            || !segment
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+    }) {
+        return Vec::new();
+    }
+    segments.into_iter().map(ToString::to_string).collect()
 }
 
 fn parse(text: &str, language: Language) -> Result<tree_sitter::Tree> {
@@ -1116,6 +1203,8 @@ fn language_for(path: &str) -> StaticLanguage {
         StaticLanguage::Rust
     } else if path.ends_with(".py") {
         StaticLanguage::Python
+    } else if path.ends_with(".toml") {
+        StaticLanguage::Toml
     } else {
         StaticLanguage::Unsupported
     }
@@ -1351,6 +1440,42 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn valid_toml_keys_are_source_bound_without_guessing_quoted_keys() {
+        let facts = analyze_artifact(
+            "config/runtime.toml",
+            "[server]\nport = 8080\nquoted = \"value\"\n[worker]\n\"queue.name\" = \"jobs\"\n",
+        )
+        .unwrap();
+
+        assert_eq!(facts.artifacts[0].language, StaticLanguage::Toml);
+        assert!(facts.configuration_reads.iter().any(|read| {
+            read.key.as_deref() == Some("server.port") && read.line == 2 && read.access == "toml"
+        }));
+        assert!(facts
+            .configuration_reads
+            .iter()
+            .any(|read| read.key.as_deref() == Some("port") && read.line == 2));
+        assert!(!facts
+            .configuration_reads
+            .iter()
+            .any(|read| read.key.as_deref() == Some("queue.name")));
+        let multiline = analyze_artifact(
+            "config/notes.toml",
+            "notes = \"\"\"\nlooks = like_a_key\n\"\"\"\n",
+        )
+        .unwrap();
+        assert!(multiline
+            .configuration_reads
+            .iter()
+            .any(|read| read.key.as_deref() == Some("notes")));
+        assert!(!multiline
+            .configuration_reads
+            .iter()
+            .any(|read| read.key.as_deref() == Some("looks")));
+        assert!(analyze_artifact("config/broken.toml", "[server\nport = 8080").is_err());
     }
 
     #[test]

@@ -507,6 +507,38 @@ mod tests {
     }
 
     #[test]
+    fn source_bound_toml_keys_are_traceable_as_configuration() {
+        let id = artifact_id(1);
+        let artifact = StaticArtifactFacts {
+            artifact_id: id,
+            facts: StaticFacts {
+                artifacts: vec![StaticArtifact {
+                    path: "config/runtime.toml".into(),
+                    language: StaticLanguage::Toml,
+                }],
+                configuration_reads: vec![StaticConfigurationRead {
+                    path: "config/runtime.toml".into(),
+                    symbol: None,
+                    access: "toml".into(),
+                    key: Some("server.port".into()),
+                    line: 2,
+                }],
+                ..StaticFacts::default()
+            },
+        };
+        let traces =
+            map_explicit_references(&[claim("Server MUST set `server.port`.", 9)], &[artifact])
+                .unwrap();
+
+        assert_eq!(traces[0].status, MappingStatus::Mapped);
+        assert_eq!(traces[0].mappings[0].target.path, "config/runtime.toml");
+        assert_eq!(
+            traces[0].mappings[0].target.kind,
+            TraceTargetKind::Configuration
+        );
+    }
+
+    #[test]
     fn proof_requirements_enforce_evidence_levels_without_claiming_static_proof() {
         let contract = Sha256Digest::from_bytes([9; 32]);
         let obligation = ProofObligation {
