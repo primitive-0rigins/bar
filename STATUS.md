@@ -137,12 +137,9 @@ work.
   and scope-context persistence are isolated in dedicated modules; split audit,
   target/inventory, and contract persistence in a later behavior-preserving
   refactor.
-- `cargo audit` reports `RUSTSEC-2023-0071` for `rsa 0.9.10`, retained in
-  `Cargo.lock` through SQLx's optional MySQL dependency. BAR enables only SQLite
-  and PostgreSQL, `cargo tree -i rsa` shows no compiled dependency path, and no
-  fixed RSA release exists. `cargo audit --ignore RUSTSEC-2023-0071` reports no
-  other advisories; keep tracking the upstream lock dependency rather than
-  claiming a clean unqualified audit.
+- Resolved 2026-07-15: the SQLx 0.9 upgrade dropped the optional-MySQL `rsa`
+  lock entry (`RUSTSEC-2023-0071`). An unqualified `cargo audit` now reports no
+  advisories.
 
 ## Phase 3 — Contract extraction shadow (implementation complete)
 
