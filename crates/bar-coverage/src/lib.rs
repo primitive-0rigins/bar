@@ -91,6 +91,7 @@ pub struct ProofAssessment {
     pub contract_fingerprint: Sha256Digest,
     pub status: ProofStatus,
     pub missing_evidence_levels: Vec<EvidenceKind>,
+    pub unresolved_references: Vec<String>,
 }
 
 /// Maps closed Markdown code spans in contract statements to unique static
@@ -199,6 +200,16 @@ pub fn assess_proof_obligation(
         .copied()
         .filter(|required| !available.contains(required))
         .collect::<Vec<_>>();
+    let unresolved_references = traceability
+        .unresolved
+        .iter()
+        .map(|reference| match reference {
+            UnresolvedReference::Missing { reference }
+            | UnresolvedReference::Ambiguous { reference, .. } => reference.clone(),
+        })
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
     let status = if obligation.freshness_revision != *evaluated_revision {
         ProofStatus::Stale
     } else if traceability.status != MappingStatus::Mapped || !missing_evidence_levels.is_empty() {
@@ -216,6 +227,7 @@ pub fn assess_proof_obligation(
         contract_fingerprint: obligation.contract_fingerprint,
         status,
         missing_evidence_levels,
+        unresolved_references,
     })
 }
 
@@ -741,6 +753,7 @@ mod tests {
         .unwrap();
         assert_eq!(partial_assessment.status, ProofStatus::Unproven);
         assert!(partial_assessment.missing_evidence_levels.is_empty());
+        assert_eq!(partial_assessment.unresolved_references, ["audit"]);
     }
 
     #[test]

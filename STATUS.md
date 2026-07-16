@@ -41,7 +41,8 @@ review is still pending.
   fail closed on reload.
 - `Store::assess_persisted_proof_obligation` reloads that declaration, rebuilds
   traceability from the stored source revision, and returns a fresh assessment
-  without persisting or auditing a derived proof status. Its explicit
+  with canonical unresolved-reference names without persisting or auditing a
+  derived proof status. Its explicit
   revision-assessment variant accepts only another known revision of that target
   and returns `stale` when it differs from the declaration's freshness revision.
 - `bar-findings` begins the next shadow-only layer with a deterministic
@@ -67,7 +68,7 @@ review is still pending.
 
 Verified on 2026-07-16:
 
-- `cargo test --workspace --all-targets` — 149 passed, 0 failed.
+- `cargo test --workspace --all-targets` — 150 passed, 0 failed.
 - `cargo clippy --workspace --all-targets -- -D warnings` — clean.
 - `cargo fmt --all -- --check` — clean.
 - `cargo audit` — no advisories reported.
