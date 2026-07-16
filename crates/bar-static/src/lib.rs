@@ -435,6 +435,14 @@ fn analyze_toml(path: &str, text: &str) -> Result<StaticFacts> {
             })
         {
             section = literal_toml_path(header);
+            if section.is_empty() {
+                facts.uncertainty.push(uncertainty(
+                    path,
+                    "unsupported_toml_key",
+                    u32::try_from(index + 1)
+                        .map_err(|_| Error::Corrupt("TOML source line exceeds u32".into()))?,
+                ));
+            }
             continue;
         }
         let Some((raw_key, value)) = line.split_once('=') else {
@@ -442,6 +450,12 @@ fn analyze_toml(path: &str, text: &str) -> Result<StaticFacts> {
         };
         let key = literal_toml_path(raw_key);
         if key.is_empty() {
+            facts.uncertainty.push(uncertainty(
+                path,
+                "unsupported_toml_key",
+                u32::try_from(index + 1)
+                    .map_err(|_| Error::Corrupt("TOML source line exceeds u32".into()))?,
+            ));
             continue;
         }
         let full_key = section
@@ -1641,6 +1655,10 @@ mod tests {
             .configuration_reads
             .iter()
             .any(|read| read.key.as_deref() == Some("queue.name")));
+        assert!(facts
+            .uncertainty
+            .iter()
+            .any(|item| item.reason == "unsupported_toml_key" && item.line == 5));
         let multiline = analyze_artifact(
             "config/notes.toml",
             "notes = \"\"\"\nlooks = like_a_key\n\"\"\"\n",
