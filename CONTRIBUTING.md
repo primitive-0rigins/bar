@@ -9,8 +9,8 @@ spec is changed deliberately, in its own commit).
 - **Read the relevant spec section before writing code.** Every change should
   trace to a requirement (MUST / MUST NOT / SHOULD / MAY carry their RFC 2119
   meanings).
-- **The tree stays green.** `cargo test`, `cargo clippy`, and `cargo fmt --check`
-  must all pass with no warnings before a commit.
+- **The tree stays green.** The workspace-wide test, Clippy, and formatting
+  gates below must all pass with no warnings before a commit.
 - **Crates land when their phase does.** New crates are added as the phased build
   manual (§21) reaches them, so `cargo build` is always clean — no empty stubs.
 - **No `unsafe`.** It is forbidden workspace-wide.

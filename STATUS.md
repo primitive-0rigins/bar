@@ -59,6 +59,15 @@ review is still pending.
 - Richer freshness policies, configuration formats beyond TOML and JSON, and broader
   contract-to-code semantics remain Phase 6 work.
 
+### Current verification
+
+Verified on 2026-07-16 at `7cf5596`:
+
+- `cargo test --workspace --all-targets` — 149 passed, 0 failed.
+- `cargo clippy --workspace --all-targets -- -D warnings` — clean.
+- `cargo fmt --all -- --check` — clean.
+- `cargo audit` — no advisories reported.
+
 ### Phase 5 delivered
 
 - `bar-static` defines the Appendix I `StaticFacts` shape for artifacts,
