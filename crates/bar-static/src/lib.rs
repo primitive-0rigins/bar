@@ -538,6 +538,14 @@ impl<'a> JsonKeyScanner<'a> {
                 return Err(Error::Corrupt("validated JSON key has no colon".into()));
             }
             self.offset += 1;
+            let line = u32::try_from(
+                self.text[..start]
+                    .bytes()
+                    .filter(|byte| *byte == b'\n')
+                    .count()
+                    + 1,
+            )
+            .map_err(|_| Error::Corrupt("JSON source line exceeds u32".into()))?;
             let nested = key.as_ref().map(|key| {
                 parent
                     .iter()
@@ -546,14 +554,6 @@ impl<'a> JsonKeyScanner<'a> {
                     .collect::<Vec<_>>()
             });
             if let Some(nested) = &nested {
-                let line = u32::try_from(
-                    self.text[..start]
-                        .bytes()
-                        .filter(|byte| *byte == b'\n')
-                        .count()
-                        + 1,
-                )
-                .map_err(|_| Error::Corrupt("JSON source line exceeds u32".into()))?;
                 for key in [nested.last().cloned().unwrap_or_default(), nested.join(".")] {
                     if !facts
                         .configuration_reads
@@ -569,6 +569,10 @@ impl<'a> JsonKeyScanner<'a> {
                         });
                     }
                 }
+            } else {
+                facts
+                    .uncertainty
+                    .push(uncertainty(path, "escaped_configuration_key", line));
             }
             self.scan_value(path, facts, nested.as_deref().unwrap_or(parent))?;
             self.skip_whitespace();
@@ -1669,6 +1673,10 @@ mod tests {
             .configuration_reads
             .iter()
             .any(|read| read.key.as_deref() == Some("queue.name")));
+        assert!(facts
+            .uncertainty
+            .iter()
+            .any(|item| item.reason == "escaped_configuration_key" && item.line == 5));
         assert!(analyze_artifact("config/broken.json", "{\"server\":").is_err());
     }
 
