@@ -15,10 +15,10 @@ review is still pending.
 
 - `bar-coverage` maps only explicit closed Markdown code spans in a source-bound
   contract statement to one unique, validated static symbol, test, literal
-  environment key, or literal TOML key. TOML keys are analyzed only after the
-  complete document parses; quoted and escaped keys remain unmapped. The result
-  retains target artifact/path/line provenance; plain-language matches are not
-  considered evidence.
+  environment key, literal TOML key, or literal JSON object key. TOML and JSON
+  keys are analyzed only after the complete document parses; quoted and escaped
+  keys remain unmapped. The result retains target artifact/path/line provenance;
+  plain-language matches are not considered evidence.
 - Missing and duplicate references remain distinct `missing` or `ambiguous`
   unresolved results. A separate closed mapping status distinguishes unmapped,
   ambiguous, partially mapped, and mapped contracts; it is not the existing
@@ -53,7 +53,7 @@ review is still pending.
   Revision-scoped retrieval revalidates every returned record before later
   review work can use it. Finding lifecycle and false-positive correction
   remain Phase 7 work.
-- Richer freshness policies, configuration formats beyond TOML, and broader
+- Richer freshness policies, configuration formats beyond TOML and JSON, and broader
   contract-to-code semantics remain Phase 6 work.
 
 ### Phase 5 delivered

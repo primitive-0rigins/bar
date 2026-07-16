@@ -17,6 +17,7 @@ pub enum StaticLanguage {
     Rust,
     Python,
     Toml,
+    Json,
     Unsupported,
 }
 
@@ -197,6 +198,7 @@ pub fn analyze_artifact(path: &str, text: &str) -> Result<StaticFacts> {
         StaticLanguage::Rust => analyze_rust(path, text),
         StaticLanguage::Python => analyze_python(path, text),
         StaticLanguage::Toml => analyze_toml(path, text),
+        StaticLanguage::Json => analyze_json(path, text),
         StaticLanguage::Unsupported => {
             let mut facts = StaticFacts::for_artifact(path, StaticLanguage::Unsupported);
             facts
@@ -471,6 +473,177 @@ fn analyze_toml(path: &str, text: &str) -> Result<StaticFacts> {
             .find(|delimiter| value.matches(delimiter).count() % 2 == 1);
     }
     Ok(facts)
+}
+
+/// Extracts direct unescaped JSON object keys after validating the whole
+/// document. Nested keys retain their dotted object path; array members do not
+/// receive invented indexes, so repeated candidates remain ambiguous later.
+fn analyze_json(path: &str, text: &str) -> Result<StaticFacts> {
+    serde_json::from_str::<serde_json::Value>(text)
+        .map_err(|error| Error::Parse(format!("invalid JSON: {error}")))?;
+    let mut facts = StaticFacts::for_artifact(path, StaticLanguage::Json);
+    let mut scanner = JsonKeyScanner::new(text);
+    scanner.scan_value(path, &mut facts, &[])?;
+    Ok(facts)
+}
+
+struct JsonKeyScanner<'a> {
+    text: &'a str,
+    offset: usize,
+}
+
+impl<'a> JsonKeyScanner<'a> {
+    fn new(text: &'a str) -> Self {
+        Self { text, offset: 0 }
+    }
+
+    fn scan_value(&mut self, path: &str, facts: &mut StaticFacts, parent: &[String]) -> Result<()> {
+        self.skip_whitespace();
+        match self.current() {
+            Some(b'{') => self.scan_object(path, facts, parent),
+            Some(b'[') => self.scan_array(path, facts, parent),
+            Some(b'\"') => {
+                self.scan_string()?;
+                Ok(())
+            }
+            Some(_) => {
+                while self
+                    .current()
+                    .is_some_and(|byte| !matches!(byte, b',' | b']' | b'}'))
+                {
+                    self.offset += 1;
+                }
+                Ok(())
+            }
+            None => Ok(()),
+        }
+    }
+
+    fn scan_object(
+        &mut self,
+        path: &str,
+        facts: &mut StaticFacts,
+        parent: &[String],
+    ) -> Result<()> {
+        self.offset += 1;
+        loop {
+            self.skip_whitespace();
+            if self.current() == Some(b'}') {
+                self.offset += 1;
+                return Ok(());
+            }
+            let (key, start) = self.scan_string()?;
+            self.skip_whitespace();
+            if self.current() != Some(b':') {
+                return Err(Error::Corrupt("validated JSON key has no colon".into()));
+            }
+            self.offset += 1;
+            let nested = key.as_ref().map(|key| {
+                parent
+                    .iter()
+                    .cloned()
+                    .chain(std::iter::once(key.clone()))
+                    .collect::<Vec<_>>()
+            });
+            if let Some(nested) = &nested {
+                let line = u32::try_from(
+                    self.text[..start]
+                        .bytes()
+                        .filter(|byte| *byte == b'\n')
+                        .count()
+                        + 1,
+                )
+                .map_err(|_| Error::Corrupt("JSON source line exceeds u32".into()))?;
+                for key in [nested.last().cloned().unwrap_or_default(), nested.join(".")] {
+                    if !facts
+                        .configuration_reads
+                        .iter()
+                        .any(|read| read.key.as_deref() == Some(key.as_str()) && read.line == line)
+                    {
+                        facts.configuration_reads.push(StaticConfigurationRead {
+                            path: path.to_string(),
+                            symbol: None,
+                            access: "json".into(),
+                            key: Some(key),
+                            line,
+                        });
+                    }
+                }
+            }
+            self.scan_value(path, facts, nested.as_deref().unwrap_or(parent))?;
+            self.skip_whitespace();
+            match self.current() {
+                Some(b',') => self.offset += 1,
+                Some(b'}') => {
+                    self.offset += 1;
+                    return Ok(());
+                }
+                _ => return Err(Error::Corrupt("validated JSON object is incomplete".into())),
+            }
+        }
+    }
+
+    fn scan_array(&mut self, path: &str, facts: &mut StaticFacts, parent: &[String]) -> Result<()> {
+        self.offset += 1;
+        loop {
+            self.skip_whitespace();
+            if self.current() == Some(b']') {
+                self.offset += 1;
+                return Ok(());
+            }
+            self.scan_value(path, facts, parent)?;
+            self.skip_whitespace();
+            match self.current() {
+                Some(b',') => self.offset += 1,
+                Some(b']') => {
+                    self.offset += 1;
+                    return Ok(());
+                }
+                _ => return Err(Error::Corrupt("validated JSON array is incomplete".into())),
+            }
+        }
+    }
+
+    fn scan_string(&mut self) -> Result<(Option<String>, usize)> {
+        let start = self.offset;
+        if self.current() != Some(b'\"') {
+            return Err(Error::Corrupt(
+                "validated JSON string is missing its opening quote".into(),
+            ));
+        }
+        self.offset += 1;
+        let content_start = self.offset;
+        let mut escaped = false;
+        while let Some(byte) = self.current() {
+            self.offset += 1;
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'\"' {
+                let content = &self.text[content_start..self.offset - 1];
+                let key = (!content.is_empty() && !content.bytes().any(|byte| byte == b'\\'))
+                    .then(|| content.to_string());
+                return Ok((key, start));
+            }
+        }
+        Err(Error::Corrupt(
+            "validated JSON string is unterminated".into(),
+        ))
+    }
+
+    fn skip_whitespace(&mut self) {
+        while self
+            .current()
+            .is_some_and(|byte| byte.is_ascii_whitespace())
+        {
+            self.offset += 1;
+        }
+    }
+
+    fn current(&self) -> Option<u8> {
+        self.text.as_bytes().get(self.offset).copied()
+    }
 }
 
 /// Returns a closed TOML dotted key path. Quoted or escaped segments are left
@@ -1205,6 +1378,8 @@ fn language_for(path: &str) -> StaticLanguage {
         StaticLanguage::Python
     } else if path.ends_with(".toml") {
         StaticLanguage::Toml
+    } else if path.ends_with(".json") {
+        StaticLanguage::Json
     } else {
         StaticLanguage::Unsupported
     }
@@ -1476,6 +1651,25 @@ mod tests {
             .iter()
             .any(|read| read.key.as_deref() == Some("looks")));
         assert!(analyze_artifact("config/broken.toml", "[server\nport = 8080").is_err());
+    }
+
+    #[test]
+    fn valid_json_keys_are_source_bound_without_guessing_escaped_keys() {
+        let facts = analyze_artifact(
+            "config/runtime.json",
+            "{\n  \"server\": {\n    \"port\": 8080\n  },\n  \"queue\\u002ename\": \"jobs\"\n}\n",
+        )
+        .unwrap();
+
+        assert_eq!(facts.artifacts[0].language, StaticLanguage::Json);
+        assert!(facts.configuration_reads.iter().any(|read| {
+            read.key.as_deref() == Some("server.port") && read.line == 3 && read.access == "json"
+        }));
+        assert!(!facts
+            .configuration_reads
+            .iter()
+            .any(|read| read.key.as_deref() == Some("queue.name")));
+        assert!(analyze_artifact("config/broken.json", "{\"server\":").is_err());
     }
 
     #[test]

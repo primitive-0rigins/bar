@@ -2253,12 +2253,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn traceability_maps_literal_toml_keys_from_persisted_static_facts() {
+    async fn traceability_maps_literal_configuration_keys_from_persisted_static_facts() {
         let repo = tempfile::tempdir().unwrap();
         let root = std::fs::canonicalize(repo.path()).unwrap();
-        let document = "Runtime MUST set `server.port`.\n";
+        let document = "Runtime MUST set `server.port`.\nWorkers MUST set `worker.concurrency`.\n";
         write_file(&root, "README.md", document.as_bytes());
         write_file(&root, "config/runtime.toml", b"[server]\nport = 8080\n");
+        write_file(
+            &root,
+            "config/workers.json",
+            b"{\n  \"worker\": {\n    \"concurrency\": 4\n  }\n}\n",
+        );
 
         let (store, _dir) = temp_store().await;
         let target_id = store
@@ -2308,15 +2313,21 @@ mod tests {
             .map_contract_traceability(&target_id, &revision_id)
             .await
             .unwrap();
-        assert_eq!(traces[0].traceability.mappings[0].reference, "server.port");
-        assert_eq!(
-            traces[0].traceability.mappings[0].target.path,
-            "config/runtime.toml"
-        );
-        assert_eq!(
-            traces[0].traceability.mappings[0].target.kind,
-            bar_coverage::TraceTargetKind::Configuration
-        );
+        for (reference, path) in [
+            ("server.port", "config/runtime.toml"),
+            ("worker.concurrency", "config/workers.json"),
+        ] {
+            let mapping = traces
+                .iter()
+                .flat_map(|trace| &trace.traceability.mappings)
+                .find(|mapping| mapping.reference == reference)
+                .unwrap();
+            assert_eq!(mapping.target.path, path);
+            assert_eq!(
+                mapping.target.kind,
+                bar_coverage::TraceTargetKind::Configuration
+            );
+        }
     }
 
     #[tokio::test]
