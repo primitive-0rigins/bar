@@ -12,9 +12,9 @@ result.
 > static architecture adapter is implemented and awaiting human review. It
 > persists artifact/revision-bound shadow facts and records unsupported or
 > uncertain code explicitly. A Phase 7 shadow-only missing-implementation
-> candidate detector is also available; it neither persists findings nor grants
-> repair authority. Daemon watchers and target scheduling remain later
-> orchestration work. Build progresses through the phased manual in
+> candidate detector also persists immutable, revision-bound candidates; it
+> grants neither repair authority nor a finding lifecycle. Daemon watchers and
+> target scheduling remain later orchestration work. Build progresses through
 > [`docs/spec.md`](docs/spec.md) §21; see [`STATUS.md`](STATUS.md) for current
 > work and completion evidence.
 

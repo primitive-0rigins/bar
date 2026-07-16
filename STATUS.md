@@ -43,8 +43,11 @@ review is still pending.
 - `bar-findings` begins the next shadow-only layer with a deterministic
   missing-implementation candidate detector. It emits only when an explicit
   source-bound contract reference is absent; prose-only, ambiguous, and merely
-  unmapped contracts do not become findings. Persistence, lifecycle, and
-  false-positive correction remain Phase 7 work.
+  unmapped contracts do not become findings. Migration `0014` persists each
+  validated candidate immutably against its contract, source, target, and
+  revision; writes and their audit event are atomic, and only an exact,
+  revalidated replay is accepted. Finding lifecycle and false-positive
+  correction remain Phase 7 work.
 - Richer freshness policies, non-environment configuration, and broader
   contract-to-code semantics remain Phase 6 work.
 

@@ -37,6 +37,7 @@ mod proof_obligations;
 mod ruling;
 mod scope_context;
 mod static_facts;
+mod static_findings;
 mod traceability;
 
 pub use attestation::{ScopeContextAttestationPersistence, StoredScopeContextAttestation};
@@ -46,6 +47,7 @@ pub use proof_obligations::{
 pub use ruling::{RulingPersistence, StoredContractRuling};
 pub use scope_context::{ScopeContextPersistence, StoredScopeContextEvidence};
 pub use static_facts::{StaticBatchPersistence, StaticFactsPersistence, StoredStaticFacts};
+pub use static_findings::{StaticFindingCandidatePersistence, StoredStaticFindingCandidate};
 pub use traceability::StoredContractTraceability;
 
 /// A handle to the BAR relational store.
@@ -2374,10 +2376,53 @@ mod tests {
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].contract_id, persisted.contract_ids[0]);
         assert_eq!(candidates[0].missing_references, ["audit"]);
+        let first = store
+            .persist_static_finding_candidate(&target_id, &revision_id, &candidates[0], T0 + 3)
+            .await
+            .unwrap();
+        let replay = store
+            .persist_static_finding_candidate(&target_id, &revision_id, &candidates[0], T0 + 4)
+            .await
+            .unwrap();
+        assert!(first.inserted);
+        assert!(!replay.inserted);
+        assert_eq!(
+            store
+                .load_static_finding_candidate(&candidates[0].fingerprint)
+                .await
+                .unwrap(),
+            StoredStaticFindingCandidate {
+                target_id,
+                revision_id,
+                candidate: candidates[0].clone(),
+                created_at_ms: T0 + 3,
+            }
+        );
         let after = store.load_audit_chain().await.unwrap();
         after.verify().unwrap();
-        assert_eq!(after.len(), before.len());
-        assert_eq!(after.tip(), before.tip());
+        assert_eq!(after.len(), before.len() + 1);
+
+        assert!(store
+            .persist_static_finding_candidate(
+                &TargetId::generate(),
+                &revision_id,
+                &candidates[0],
+                T0 + 5,
+            )
+            .await
+            .is_err());
+        sqlx::query(
+            "UPDATE static_finding_candidates SET missing_references_json = ? WHERE fingerprint = ?",
+        )
+        .bind(r#"["forged"]"#)
+        .bind(candidates[0].fingerprint.to_string())
+        .execute(&store.pool)
+        .await
+        .unwrap();
+        assert!(store
+            .load_static_finding_candidate(&candidates[0].fingerprint)
+            .await
+            .is_err());
     }
 
     #[tokio::test]

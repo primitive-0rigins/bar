@@ -26,6 +26,25 @@ pub enum StaticFindingKind {
     MissingImplementation,
 }
 
+impl StaticFindingKind {
+    /// Stable token for durable storage.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::MissingImplementation => "missing_implementation",
+        }
+    }
+
+    /// Parses only currently implemented static detector classes.
+    pub fn from_token(token: &str) -> Result<Self> {
+        match token {
+            "missing_implementation" => Ok(Self::MissingImplementation),
+            _ => Err(Error::Corrupt(format!(
+                "unknown static finding kind `{token}`"
+            ))),
+        }
+    }
+}
+
 /// A deterministic, source-bound candidate. It is not a persisted finding and
 /// has no authority to trigger repair or lifecycle transitions.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -136,6 +155,7 @@ fn missing_implementation_fingerprint(
     hash_part(&mut hasher, source.artifact_id.to_string().as_bytes());
     hash_part(&mut hasher, &source.start_offset.to_be_bytes());
     hash_part(&mut hasher, &source.end_offset.to_be_bytes());
+    hash_part(&mut hasher, source.exact_text_sha256.to_string().as_bytes());
     for reference in missing_references {
         hash_part(&mut hasher, reference.as_bytes());
     }
@@ -217,6 +237,9 @@ mod tests {
         tampered = candidates[0].clone();
         tampered.fingerprint = Sha256Digest::from_bytes([9; 32]);
         assert!(validate_static_finding_candidate(&tampered).is_err());
+        tampered = candidates[0].clone();
+        tampered.source.exact_text_sha256 = Sha256Digest::from_bytes([9; 32]);
+        assert!(validate_static_finding_candidate(&tampered).is_err());
     }
 
     #[test]
@@ -256,5 +279,14 @@ mod tests {
             }],
         );
         assert!(detect_missing_implementations(&[repeated.clone(), repeated]).is_err());
+    }
+
+    #[test]
+    fn finding_kind_token_is_closed() {
+        assert_eq!(
+            super::StaticFindingKind::from_token("missing_implementation").unwrap(),
+            super::StaticFindingKind::MissingImplementation
+        );
+        assert!(super::StaticFindingKind::from_token("forged").is_err());
     }
 }
