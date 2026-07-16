@@ -8,7 +8,7 @@ extraction shadow** (spec §21).
 |---|---|
 | **phase** | 3 — Contract extraction shadow |
 | **source_revision** | `3fb0fc6` → `74e1408` → `85fff4d` → `b483f02` → `3ca47dc` → `c5959d1` → `3238221` → `502037f` |
-| **reviewed_by_human** | pending |
+| **reviewed_by_human** | approved — Bryce Worthy, 2026-07-15 |
 | **signed_by_agent** | build sessions, 2026-07-15 |
 
 ## Exit criteria (spec §21)

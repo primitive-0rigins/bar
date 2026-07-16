@@ -8,7 +8,7 @@ discovery** (spec §21).
 |---|---|
 | **phase** | 2 — Artifact discovery |
 | **source_revision** | `3e8671a` (discovery) → `73d7ea8` (inventory persistence) → `50600c1` (dependency-aware reparse planning) |
-| **reviewed_by_human** | pending |
+| **reviewed_by_human** | approved — Bryce Worthy, 2026-07-15 |
 | **signed_by_agent** | build sessions, 2026-07-13 through 2026-07-15 |
 
 ## changed_files

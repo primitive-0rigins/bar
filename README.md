@@ -8,7 +8,7 @@ approved work to a connected coding agent, and then independently verifies the
 result.
 
 > **Status:** Phase 4 — contract scope, temporal resolution, and adjudication —
-> is implementation complete and pending human review. The pure applicability
+> is complete and human-reviewed. The pure applicability
 > resolver implements closed fail-safe states, inclusive validity windows,
 > documented scope precedence, and mandatory adjudication for ties or unknown
 > context. Scope, validity, supersession, and evidence-bound operator rulings

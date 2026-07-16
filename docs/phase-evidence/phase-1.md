@@ -8,7 +8,7 @@ registration and identity** (spec §21).
 |---|---|
 | **phase** | 1 — Target registration and identity |
 | **source_revision** | `e26aca1` (identity layer) → `00d4274` (registry) |
-| **reviewed_by_human** | pending |
+| **reviewed_by_human** | approved — Bryce Worthy, 2026-07-15 |
 | **signed_by_agent** | build session, 2026-07-13 |
 
 ## Exit criteria (spec §21)

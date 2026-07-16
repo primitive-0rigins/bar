@@ -86,7 +86,7 @@ Implementation revisions: `5a9b3ef`, `f9e71af`, `414be5c`, `15adcfd`, `ed0f016`,
 
 [`docs/phase-evidence/phase-4.md`](docs/phase-evidence/phase-4.md) records the
 implemented requirements, fixtures, migrations, security checks, and remaining
-cross-phase dependencies. **Human review is pending.** Automatic runtime
+cross-phase dependencies. Human review approved 2026-07-15. Automatic runtime
 context adapters remain Phase 9 work; dashboard adjudication remains Phase 8
 work.
 
@@ -221,8 +221,8 @@ are clean. Implementation revisions:
 `3238221`, and `502037f`.
 
 Completion evidence per spec Appendix AP:
-[`docs/phase-evidence/phase-3.md`](docs/phase-evidence/phase-3.md) — **pending
-human review**.
+[`docs/phase-evidence/phase-3.md`](docs/phase-evidence/phase-3.md) — reviewed
+and approved 2026-07-15.
 
 ### Known limitations and next-phase work
 
@@ -238,7 +238,7 @@ human review**.
 - Optional worker adapter invocation, isolation, and resource-pressure
   suspension; current code validates bounded output and reports unavailable
   honestly but invokes no model.
-- Human review of the Phase 3 completion evidence remains pending.
+- Human review of the Phase 3 completion evidence was approved 2026-07-15.
 
 ## Phase 2 — Artifact discovery (implementation complete)
 
@@ -282,8 +282,8 @@ rehashes only that file and produces a reparse plan containing only the changed
 artifact and its transitive dependents; unchanged, unrelated files are neither
 read nor selected. All 78 tests pass; clippy `-D warnings` and fmt are clean.
 Phase evidence per spec Appendix AP:
-[`docs/phase-evidence/phase-2.md`](docs/phase-evidence/phase-2.md) — **pending
-human review**.
+[`docs/phase-evidence/phase-2.md`](docs/phase-evidence/phase-2.md) — reviewed
+and approved 2026-07-15.
 
 Language-specific parsers populate dependency edges in the contract/static
 adapter phases; Phase 2 accepts validated edges and owns their persistence and
@@ -325,8 +325,8 @@ read-only policy.
 
 Both exit criteria are met and tested (57 tests, clippy `-D warnings` and fmt
 clean). Completion evidence per spec Appendix AP:
-[`docs/phase-evidence/phase-1.md`](docs/phase-evidence/phase-1.md) — **pending
-human review**.
+[`docs/phase-evidence/phase-1.md`](docs/phase-evidence/phase-1.md) — reviewed
+and approved 2026-07-15.
 
 The operator entry point (CLI/HTTP registration) is deferred to the API phase;
 Phase 1 lands registration as a tested library capability (shadow-first). The
@@ -392,8 +392,8 @@ benchmark harness.
 
 All Phase-0 implementation items are delivered and green (38 tests, clippy
 `-D warnings` and fmt clean). Completion evidence per spec Appendix AP:
-[`docs/phase-evidence/phase-0.md`](docs/phase-evidence/phase-0.md) — **pending
-human review** before the phase is formally closed and Phase 1 begins.
+[`docs/phase-evidence/phase-0.md`](docs/phase-evidence/phase-0.md) — reviewed
+and approved 2026-07-15.
 
 Idle CPU/RAM, incremental-scan RAM, high-volume ingestion, and target-pressure
 suspension (spec §23 performance rows) join the harness with the service loop.

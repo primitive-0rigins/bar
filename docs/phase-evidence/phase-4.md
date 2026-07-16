@@ -8,7 +8,7 @@ scope, temporal resolver, adjudication** (spec §21).
 |---|---|
 | **phase** | 4 — Contract scope, temporal resolver, adjudication |
 | **source_revision** | `5a9b3ef` → `f9e71af` → `414be5c` → `ed0f016` → `2054c8d` → `a93a672` → `5483b93` → `3e63c89` → `ee9b01d` → `1862d2e` → `1c21194` → `d3d4c2a` → `3ec5aa9` → `37b3642` → `3696360` → `d0d8480` |
-| **reviewed_by_human** | pending |
+| **reviewed_by_human** | approved — Bryce Worthy, 2026-07-15 |
 | **signed_by_agent** | build sessions, 2026-07-15 |
 
 ## Exit criteria (spec §21)
@@ -139,9 +139,8 @@ All migrations are embedded and their replay is covered by
 
 ## known_limitations
 
-- Human review remains pending. Per Appendix AP, this evidence records the
-  implementation closure but does not claim operational approval or enable new
-  authority.
+- Per Appendix AP, this evidence records the implementation closure but does
+  not enable new authority; human review was approved 2026-07-15 (see header).
 - Phase 4 deliberately exposes no dashboard, API, runtime adapter, active
   probe, production telemetry, or automated remediation. Their requirement IDs
   remain owned by Phases 8, 9, and later.

@@ -9,7 +9,7 @@ skeleton, CI, STATUS** (spec §21).
 |---|---|
 | **phase** | 0 — Baseline, repository skeleton, CI, STATUS |
 | **source_revision** | `13bbf07` (harness); phase spans `e5f8299 → 13bbf07` |
-| **reviewed_by_human** | pending |
+| **reviewed_by_human** | approved — Bryce Worthy, 2026-07-15 |
 | **signed_by_agent** | build session, 2026-07-13 |
 
 ## Exit criteria (spec §21)
