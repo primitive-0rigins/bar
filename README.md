@@ -142,6 +142,20 @@ deleted record: REFUSED — corrupt input: audit record at position 0 has seq 1
 reordered records: REFUSED — corrupt input: audit record at position 1 has seq 2
 ```
 
+### See deterministic configuration traceability
+
+```sh
+cargo run -p bar-coverage --example config_traceability
+```
+
+The example maps an explicit contract reference to the exact JSON configuration
+path and source line, without treating the mapping as behavioral proof:
+
+```text
+mapping status: Mapped
+`server.port` → config/runtime.json:1 (Configuration)
+```
+
 ### Verify a checkout
 
 ```sh
