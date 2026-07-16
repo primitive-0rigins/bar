@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 
 use bar_audit::{AuditCategory, AuditEvent};
 use bar_contract::SourceRef;
-use bar_core::{ContractId, Error, Result, RevisionId, Sha256Digest, TargetId};
+use bar_core::{ContractId, Error, NormativeKind, Result, RevisionId, Sha256Digest, TargetId};
 use bar_findings::{validate_static_finding_candidate, StaticFindingCandidate, StaticFindingKind};
 use sqlx::sqlite::Sqlite;
 use sqlx::{FromRow, Transaction};
@@ -227,25 +227,27 @@ impl Store {
         submission: &StaticFindingCandidateSubmission<'_>,
     ) -> Result<()> {
         let candidate = submission.candidate;
-        let contract: Option<(String, String, String)> = sqlx::query_as(
-            "SELECT target_id, revision_id, fingerprint FROM contracts WHERE contract_id = ?",
+        let contract: Option<(String, String, String, String)> = sqlx::query_as(
+            "SELECT target_id, revision_id, fingerprint, normative_kind FROM contracts WHERE contract_id = ?",
         )
         .bind(candidate.contract_id.to_string())
         .fetch_optional(&mut **tx)
         .await
         .map_err(storage("load static-finding contract"))?;
-        let (stored_target, stored_revision, stored_fingerprint) = contract.ok_or_else(|| {
-            Error::Corrupt(format!(
-                "static finding candidate references unknown contract {}",
-                candidate.contract_id
-            ))
-        })?;
+        let (stored_target, stored_revision, stored_fingerprint, stored_kind) = contract
+            .ok_or_else(|| {
+                Error::Corrupt(format!(
+                    "static finding candidate references unknown contract {}",
+                    candidate.contract_id
+                ))
+            })?;
         if stored_target != target_id.to_string()
             || stored_revision != revision_id.to_string()
             || stored_fingerprint != candidate.contract_fingerprint.to_string()
+            || stored_kind != NormativeKind::Required.as_str()
         {
             return Err(Error::Corrupt(
-                "static finding candidate does not match its contract target, revision, or fingerprint"
+                "static finding candidate does not match a required contract target, revision, or fingerprint"
                     .into(),
             ));
         }

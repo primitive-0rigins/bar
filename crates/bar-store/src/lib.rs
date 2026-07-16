@@ -2410,6 +2410,20 @@ mod tests {
             .unwrap()
             .is_empty());
         assert_eq!(store.load_audit_chain().await.unwrap().len(), before.len());
+        sqlx::query("UPDATE contracts SET normative_kind = 'planned' WHERE contract_id = ?")
+            .bind(candidates[0].contract_id.to_string())
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        assert!(store
+            .persist_static_finding_candidates(&target_id, &revision_id, &candidates, T0 + 4)
+            .await
+            .is_err());
+        sqlx::query("UPDATE contracts SET normative_kind = 'required' WHERE contract_id = ?")
+            .bind(candidates[0].contract_id.to_string())
+            .execute(&store.pool)
+            .await
+            .unwrap();
         let first = store
             .persist_static_finding_candidates(&target_id, &revision_id, &candidates, T0 + 4)
             .await

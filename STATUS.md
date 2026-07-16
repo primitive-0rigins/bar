@@ -55,7 +55,7 @@ review is still pending.
   status, references from the contract's closed code spans, target names,
   distinct ambiguity candidates, and nonempty source-span provenance match its
   resolved and unresolved data before it can become a candidate. Migration `0014` persists each
-  validated candidate immutably against its contract, source, target, and
+  validated candidate only against a required contract, source, target, and
   revision; writes and their audit event are atomic, and only an exact,
   revalidated replay is accepted. A candidate batch validates its full input
   before it writes, so a bad member cannot leave a partial scan result.
