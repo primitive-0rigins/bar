@@ -59,6 +59,68 @@ pub struct StaticFindingCandidate {
     pub missing_references: Vec<String>,
 }
 
+/// A stable, revision-independent finding aggregated from one or more candidate
+/// occurrences. Its identity (spec Appendix H.5) is derived from the finding
+/// class, the contract's revision-stable cited-text hash, and the normalized
+/// missing-reference set — never a revision-scoped contract or artifact id — so
+/// the same symptom seen at different revisions is one finding.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StaticFinding {
+    pub finding_fingerprint: Sha256Digest,
+    pub kind: StaticFindingKind,
+    pub contract_exact_text_sha256: Sha256Digest,
+    pub missing_references: Vec<String>,
+}
+
+/// Promotes one validated candidate into its stable finding identity. The
+/// candidate is revalidated first, so a forged candidate cannot mint a finding.
+pub fn promote_candidate(candidate: &StaticFindingCandidate) -> Result<StaticFinding> {
+    validate_static_finding_candidate(candidate)?;
+    let finding = StaticFinding {
+        finding_fingerprint: finding_fingerprint(
+            candidate.kind,
+            candidate.source.exact_text_sha256,
+            &candidate.missing_references,
+        ),
+        kind: candidate.kind,
+        contract_exact_text_sha256: candidate.source.exact_text_sha256,
+        missing_references: candidate.missing_references.clone(),
+    };
+    validate_static_finding(&finding)?;
+    Ok(finding)
+}
+
+/// Revalidates a finding before it crosses into durable storage or review: a
+/// nonempty, sorted, unique reference set and a fingerprint that matches its
+/// contents.
+pub fn validate_static_finding(finding: &StaticFinding) -> Result<()> {
+    if finding.missing_references.is_empty()
+        || finding
+            .missing_references
+            .iter()
+            .any(|reference| reference.is_empty())
+        || !finding
+            .missing_references
+            .windows(2)
+            .all(|pair| pair[0] < pair[1])
+    {
+        return Err(Error::Corrupt(
+            "static finding has an invalid missing-reference set".into(),
+        ));
+    }
+    let expected = finding_fingerprint(
+        finding.kind,
+        finding.contract_exact_text_sha256,
+        &finding.missing_references,
+    );
+    if finding.finding_fingerprint != expected {
+        return Err(Error::Corrupt(
+            "static finding fingerprint does not match its contents".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Revalidates a candidate before it crosses into durable storage. Only the
 /// implemented missing-implementation class is accepted, with a canonical
 /// reference set and its deterministic fingerprint.
@@ -203,6 +265,29 @@ fn missing_implementation_fingerprint(
     Sha256Digest::from_bytes(hasher.finalize().into())
 }
 
+/// The stable finding identity (spec Appendix H.5): class, the contract's
+/// revision-stable cited-text hash, and the sorted missing-reference set. It
+/// excludes the revision-scoped contract/artifact ids and byte offsets, so the
+/// same symptom aggregates across revisions while a changed statement or
+/// reference set is a new finding.
+fn finding_fingerprint(
+    kind: StaticFindingKind,
+    contract_exact_text_sha256: Sha256Digest,
+    missing_references: &[String],
+) -> Sha256Digest {
+    let mut hasher = Sha256::new();
+    hash_part(&mut hasher, b"static_finding");
+    hash_part(&mut hasher, kind.as_str().as_bytes());
+    hash_part(
+        &mut hasher,
+        contract_exact_text_sha256.to_string().as_bytes(),
+    );
+    for reference in missing_references {
+        hash_part(&mut hasher, reference.as_bytes());
+    }
+    Sha256Digest::from_bytes(hasher.finalize().into())
+}
+
 fn hash_part(hasher: &mut Sha256, bytes: &[u8]) {
     hasher.update((bytes.len() as u64).to_be_bytes());
     hasher.update(bytes);
@@ -215,8 +300,8 @@ mod tests {
     use bar_coverage::{MappingStatus, TraceTarget, TraceTargetKind, UnresolvedReference};
 
     use super::{
-        detect_missing_implementations, validate_static_finding_candidate, ContractTraceability,
-        TraceableContract,
+        detect_missing_implementations, promote_candidate, validate_static_finding,
+        validate_static_finding_candidate, ContractTraceability, TraceableContract,
     };
 
     fn contract(
@@ -432,6 +517,65 @@ mod tests {
         );
         forged_span.claim.source.end_offset = forged_span.claim.source.start_offset;
         assert!(detect_missing_implementations(&[forged_span]).is_err());
+    }
+
+    #[test]
+    fn candidates_promote_to_a_stable_revision_independent_finding() {
+        // Two contracts with the same cited text and missing reference but
+        // distinct (revision-scoped) contract ids produce distinct *candidate*
+        // fingerprints yet the same *finding* fingerprint.
+        let missing = || {
+            vec![UnresolvedReference::Missing {
+                reference: "authorize".into(),
+            }]
+        };
+        let first = contract("`authorize` is required.", 1, missing());
+        let second = contract("`authorize` is required.", 1, missing());
+        let candidate_one = detect_missing_implementations(std::slice::from_ref(&first))
+            .unwrap()
+            .pop()
+            .unwrap();
+        let candidate_two = detect_missing_implementations(std::slice::from_ref(&second))
+            .unwrap()
+            .pop()
+            .unwrap();
+        assert_ne!(candidate_one.fingerprint, candidate_two.fingerprint);
+
+        let finding_one = promote_candidate(&candidate_one).unwrap();
+        let finding_two = promote_candidate(&candidate_two).unwrap();
+        assert_eq!(finding_one, finding_two);
+        assert_eq!(
+            finding_one.contract_exact_text_sha256,
+            Sha256Digest::from_bytes([1; 32])
+        );
+
+        // A different missing-reference set is a different finding.
+        let other = contract(
+            "`audit` is required.",
+            1,
+            vec![UnresolvedReference::Missing {
+                reference: "audit".into(),
+            }],
+        );
+        let other_finding = promote_candidate(
+            &detect_missing_implementations(std::slice::from_ref(&other))
+                .unwrap()
+                .pop()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_ne!(
+            finding_one.finding_fingerprint,
+            other_finding.finding_fingerprint
+        );
+
+        // Tampering the reference set or fingerprint fails closed.
+        let mut wrong_fingerprint = finding_one.clone();
+        wrong_fingerprint.missing_references = vec!["audit".into()];
+        assert!(validate_static_finding(&wrong_fingerprint).is_err());
+        let mut unsorted = finding_one.clone();
+        unsorted.missing_references = vec!["b".into(), "a".into()];
+        assert!(validate_static_finding(&unsorted).is_err());
     }
 
     #[test]

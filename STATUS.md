@@ -2,20 +2,53 @@
 
 Living status of the Behavioral Assurance Runtime build. Newest first.
 
-## Current phase: 6 — Traceability and proof obligations (implementation complete, human review pending)
+## Current phase: 7 — Static finding engine (started)
 
-Phase 6 implementation is complete: contracts map to code, tests, and
-TOML/JSON/INI/YAML configuration through unique source-bound facts; authority
-guards and state transitions are traceable targets; proof obligations are
-immutable, revision-bound, and evidence-level enforced; and freshness is
-policy-driven (`Pinned` / `ReferenceStable`). Both exit criteria are met —
-unmapped versus unproven are distinct types and evidence levels are enforced.
-The completion record is
-[`docs/phase-evidence/phase-6.md`](docs/phase-evidence/phase-6.md); human review
-is pending, as is Phase 5's
-[`docs/phase-evidence/phase-5.md`](docs/phase-evidence/phase-5.md). Next is the
-Phase 7 static finding engine, whose missing-implementation candidate foundation
-is already seeded.
+Phase 6 implementation is complete (contracts map to code/tests/config, authority
+and state traceability, immutable evidence-level-enforced proof obligations, and
+`Pinned`/`ReferenceStable` freshness); its completion record is
+[`docs/phase-evidence/phase-6.md`](docs/phase-evidence/phase-6.md), and human
+review of it and Phase 5's
+[`docs/phase-evidence/phase-5.md`](docs/phase-evidence/phase-5.md) is pending.
+
+### Phase 7 started
+
+- `bar-findings` promotes detector **candidates** into durable, aggregated
+  **findings**. A candidate's fingerprint embeds the revision-scoped
+  `contract_id`, so the same real defect at two revisions produces two distinct
+  candidates; a `StaticFinding` instead has a stable, revision-independent
+  identity (spec Appendix H.5) built from the finding class, the contract's
+  revision-stable cited-text hash, and the sorted missing-reference set — never a
+  revision-scoped id or byte offset. So the same symptom aggregates into one
+  finding, while a changed statement or reference set is a new finding.
+- `Store::promote_static_findings` reads one revision's persisted candidates and
+  upserts findings by fingerprint (migration `0016`, keyed by target + stable
+  fingerprint): a new symptom inserts as `detected`; a symptom already seen at
+  another revision advances only its `last_seen_*` (aggregation) with status
+  preserved; re-promoting the same revision is an idempotent no-op (replay). Each
+  insert and aggregation is atomically audited, and a forged identity or unknown
+  status token fails closed on reload. The `status` column uses the canonical
+  finding lifecycle vocabulary so the next increment can add false-positive
+  retention without a schema change.
+- Two deliberate scoping notes. The stable identity uses the contract's
+  `exact_text_sha256` rather than H.5's `normalized_active_contract_ids`, so two
+  distinct contracts with byte-identical cited text and the same missing
+  references collapse into one finding (same symptom); and occurrence tracking is
+  monotonic in promotion time, so out-of-order re-scanning of an older revision
+  with a newer clock is not yet ordered by revision. Both are acceptable for the
+  shadow layer and refined with the finding lifecycle.
+- Finding false-positive/waiver retention (§12.6), additional detector classes
+  (contradiction, dead path, bypass, state, architecture erosion, docs conflict),
+  and the finding dependency graph (§12.4) remain Phase 7 work.
+
+### Current verification
+
+Verified on 2026-07-21:
+
+- `cargo test --workspace --all-targets` — 158 passed, 0 failed.
+- `cargo clippy --workspace --all-targets -- -D warnings` — clean.
+- `cargo fmt --all -- --check` — clean.
+- `cargo audit` — no advisories reported.
 
 ### Phase 6 delivered
 
@@ -120,15 +153,6 @@ is already seeded.
   Phase 6's exit criteria (unmapped vs. unproven distinct, evidence levels
   enforced) and its proof-obligation, traceability, and freshness scope are
   implemented.
-
-### Current verification
-
-Verified on 2026-07-21:
-
-- `cargo test --workspace --all-targets` — 156 passed, 0 failed.
-- `cargo clippy --workspace --all-targets -- -D warnings` — clean.
-- `cargo fmt --all -- --check` — clean.
-- `cargo audit` — no advisories reported.
 
 ### Phase 5 delivered
 

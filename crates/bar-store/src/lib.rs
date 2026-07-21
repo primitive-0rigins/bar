@@ -2399,6 +2399,147 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn promote_static_findings_aggregate_and_replay() {
+        let repo = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(repo.path()).unwrap();
+        let document = "Requests MUST call `authorize`.\n";
+        write_file(&root, "README.md", document.as_bytes());
+        // `authorize` is absent, so the required reference is a missing-implementation.
+        write_file(&root, "src/auth.rs", b"pub fn other() {}\n");
+
+        let (store, _dir) = temp_store().await;
+        let target_id = store
+            .register_target(&tree_target(&root), T0)
+            .await
+            .unwrap()
+            .target_id;
+
+        let scan_and_promote = |revision: RevisionId, ts: u64| {
+            let store = &store;
+            let root = &root;
+            async move {
+                let inventory = bar_discovery::scan(
+                    root,
+                    &bar_discovery::ScanConfig::default(),
+                    &PriorInventory::new(),
+                )
+                .unwrap();
+                store
+                    .persist_inventory(&target_id, &revision, &inventory, ts)
+                    .await
+                    .unwrap();
+                let document_artifact = inventory
+                    .artifacts
+                    .iter()
+                    .find(|artifact| artifact.logical_path == "README.md")
+                    .unwrap();
+                let document_text = bar_contract::ArtifactText::new(
+                    document_artifact.artifact_id(&revision),
+                    &document_artifact.logical_path,
+                    document_artifact.content_sha256.parse().unwrap(),
+                    document,
+                )
+                .unwrap();
+                let contracts = bar_contract::extract_deterministic(&document_text).unwrap();
+                store
+                    .persist_contracts(&target_id, &revision, &contracts, ts + 1)
+                    .await
+                    .unwrap();
+                let batch = bar_static::analyze_inventory(root, &inventory, &revision).unwrap();
+                store
+                    .persist_static_batch(&target_id, &revision, &batch, ts + 2)
+                    .await
+                    .unwrap();
+                let candidates = store
+                    .missing_implementation_candidates(&target_id, &revision)
+                    .await
+                    .unwrap();
+                store
+                    .persist_static_finding_candidates(&target_id, &revision, &candidates, ts + 3)
+                    .await
+                    .unwrap();
+                store
+                    .promote_static_findings(&target_id, &revision, ts + 4)
+                    .await
+                    .unwrap()
+            }
+        };
+
+        let first = store
+            .record_revision(&target_id, &revision("first", None), T0)
+            .await
+            .unwrap()
+            .revision_id;
+        let promotion_one = scan_and_promote(first, T0).await;
+        assert_eq!(promotion_one.inserted, 1);
+        assert_eq!(promotion_one.aggregated, 0);
+
+        // The same symptom at a later revision aggregates into the same finding.
+        let second = store
+            .record_revision(&target_id, &revision("second", None), T0 + 10)
+            .await
+            .unwrap()
+            .revision_id;
+        let promotion_two = scan_and_promote(second, T0 + 10).await;
+        assert_eq!(promotion_two.inserted, 0);
+        assert_eq!(promotion_two.aggregated, 1);
+
+        let candidate = store
+            .missing_implementation_candidates(&target_id, &second)
+            .await
+            .unwrap()
+            .pop()
+            .unwrap();
+        let fingerprint = bar_findings::promote_candidate(&candidate)
+            .unwrap()
+            .finding_fingerprint;
+        let finding = store
+            .load_static_finding(&target_id, &fingerprint)
+            .await
+            .unwrap();
+        assert_eq!(finding.first_seen_revision_id, first);
+        assert_eq!(finding.last_seen_revision_id, second);
+        assert_eq!(finding.status, bar_core::FindingStatus::Detected);
+
+        // Re-promoting the same revision is an idempotent replay.
+        let replay = store
+            .promote_static_findings(&target_id, &second, T0 + 20)
+            .await
+            .unwrap();
+        assert_eq!(replay.inserted, 0);
+        assert_eq!(replay.aggregated, 0);
+
+        // Re-promoting the earlier revision with a non-advancing timestamp is a
+        // no-op and does not drift `last_seen` backward.
+        let stale = store
+            .promote_static_findings(&target_id, &first, T0)
+            .await
+            .unwrap();
+        assert_eq!(stale.inserted, 0);
+        assert_eq!(stale.aggregated, 0);
+        assert_eq!(
+            store
+                .load_static_finding(&target_id, &fingerprint)
+                .await
+                .unwrap()
+                .last_seen_revision_id,
+            second
+        );
+
+        // A forged status token fails closed on reload.
+        sqlx::query("UPDATE static_findings SET status = ? WHERE finding_fingerprint = ?")
+            .bind("bogus")
+            .bind(fingerprint.to_string())
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        assert!(store
+            .load_static_finding(&target_id, &fingerprint)
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
     async fn traceability_maps_literal_configuration_keys_from_persisted_static_facts() {
         let repo = tempfile::tempdir().unwrap();
         let root = std::fs::canonicalize(repo.path()).unwrap();
