@@ -10,6 +10,8 @@ use bar_core::{ArtifactId, Error, Result, RevisionId};
 use bar_discovery::{ArtifactKind, Inventory};
 use serde::{Deserialize, Serialize};
 use tree_sitter::{Language, Node, Parser};
+use yaml_rust2::parser::{Event, MarkedEventReceiver};
+use yaml_rust2::scanner::Marker;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -19,6 +21,7 @@ pub enum StaticLanguage {
     Toml,
     Json,
     Ini,
+    Yaml,
     Unsupported,
 }
 
@@ -201,6 +204,7 @@ pub fn analyze_artifact(path: &str, text: &str) -> Result<StaticFacts> {
         StaticLanguage::Toml => analyze_toml(path, text),
         StaticLanguage::Json => analyze_json(path, text),
         StaticLanguage::Ini => analyze_ini(path, text),
+        StaticLanguage::Yaml => analyze_yaml(path, text),
         StaticLanguage::Unsupported => {
             let mut facts = StaticFacts::for_artifact(path, StaticLanguage::Unsupported);
             facts
@@ -373,6 +377,7 @@ fn configuration_access_is_valid(language: StaticLanguage, access: &str) -> bool
         StaticLanguage::Toml => access == "toml",
         StaticLanguage::Json => access == "json",
         StaticLanguage::Ini => access == "ini",
+        StaticLanguage::Yaml => access == "yaml",
         StaticLanguage::Unsupported => false,
     }
 }
@@ -723,7 +728,7 @@ fn analyze_ini(path: &str, text: &str) -> Result<StaticFacts> {
         let Some(delimiter) = line.find(['=', ':']) else {
             continue;
         };
-        let Some(key) = ini_literal_key(&line[..delimiter]) else {
+        let Some(key) = literal_config_key(&line[..delimiter]) else {
             facts
                 .uncertainty
                 .push(uncertainty(path, "unsupported_ini_key", source_line));
@@ -756,12 +761,13 @@ fn analyze_ini(path: &str, text: &str) -> Result<StaticFacts> {
 /// with trailing content, a missing bracket, or a non-literal name is rejected.
 fn ini_header(line: &str) -> Option<String> {
     let inner = line.strip_prefix('[')?.strip_suffix(']')?;
-    ini_literal_key(inner)
+    literal_config_key(inner)
 }
 
-/// Accepts a single flat INI key or section name using the same literal charset
-/// as TOML keys plus the literal `.`; dots are not treated as nesting here.
-fn ini_literal_key(value: &str) -> Option<String> {
+/// Accepts a single literal configuration key or section name (the same
+/// alphanumeric/`_`/`-` charset as TOML keys plus the literal `.`); dots are not
+/// split into nesting here. Shared by the INI and YAML key extractors.
+fn literal_config_key(value: &str) -> Option<String> {
     let key = value.trim();
     if key.is_empty()
         || !key
@@ -771,6 +777,255 @@ fn ini_literal_key(value: &str) -> Option<String> {
         return None;
     }
     Some(key.to_string())
+}
+
+/// Extracts direct, literal YAML mapping keys (`.yaml`, `.yml`) after the whole
+/// document parses. Like the JSON analyzer, nested keys keep their dotted path
+/// and both the bare and qualified spellings are emitted, while sequence
+/// elements never receive invented indexes. Only literal scalar keys become
+/// `configuration` reads; quoted-with-special-characters, aliased, merge (`<<`),
+/// and complex (mapping or sequence) keys record `unsupported_yaml_key`
+/// uncertainty and are skipped rather than guessed.
+fn analyze_yaml(path: &str, text: &str) -> Result<StaticFacts> {
+    let mut receiver = YamlKeyReceiver::new(path);
+    yaml_rust2::parser::Parser::new_from_str(text)
+        .load(&mut receiver, true)
+        .map_err(|error| Error::Parse(format!("invalid YAML: {error}")))?;
+    Ok(receiver.facts)
+}
+
+/// A container open in the YAML event stream. `pushed` records whether opening
+/// it added a segment to the dotted key prefix, so its close pops exactly what
+/// its open pushed.
+enum YamlFrame {
+    Map { awaiting_key: bool, pushed: bool },
+    Seq { pushed: bool },
+}
+
+enum ScalarRole {
+    Key,
+    MapValue,
+    Other,
+}
+
+/// Marked event receiver that reconstructs dotted key paths from the YAML event
+/// stream, emitting only literal scalar keys and skipping unsupported keys and
+/// their bound values.
+struct YamlKeyReceiver {
+    path: String,
+    facts: StaticFacts,
+    stack: Vec<YamlFrame>,
+    prefix: Vec<String>,
+    pending_key: Option<String>,
+    skip_nodes: usize,
+    skip_depth: usize,
+}
+
+impl YamlKeyReceiver {
+    fn new(path: &str) -> Self {
+        Self {
+            path: path.to_string(),
+            facts: StaticFacts::for_artifact(path, StaticLanguage::Yaml),
+            stack: Vec::new(),
+            prefix: Vec::new(),
+            pending_key: None,
+            skip_nodes: 0,
+            skip_depth: 0,
+        }
+    }
+
+    /// Markers are 1-indexed; configuration files never approach `u32` lines.
+    fn line_of(mark: Marker) -> u32 {
+        u32::try_from(mark.line()).unwrap_or(u32::MAX)
+    }
+
+    fn set_map_awaiting(&mut self, value: bool) {
+        if let Some(YamlFrame::Map { awaiting_key, .. }) = self.stack.last_mut() {
+            *awaiting_key = value;
+        }
+    }
+
+    /// A value node just finished: if it sat in a mapping, that mapping now
+    /// expects its next key.
+    fn value_completed(&mut self) {
+        self.set_map_awaiting(true);
+        self.pending_key = None;
+    }
+
+    fn open_container(&mut self, is_map: bool) {
+        // A container opened as a value under a literal key extends the prefix.
+        let pushed = if let Some(key) = self.pending_key.take() {
+            self.prefix.push(key);
+            true
+        } else {
+            false
+        };
+        self.stack.push(if is_map {
+            YamlFrame::Map {
+                awaiting_key: true,
+                pushed,
+            }
+        } else {
+            YamlFrame::Seq { pushed }
+        });
+    }
+
+    fn close_container(&mut self) {
+        if let Some(YamlFrame::Map { pushed, .. } | YamlFrame::Seq { pushed }) = self.stack.pop() {
+            if pushed {
+                self.prefix.pop();
+            }
+        }
+        self.value_completed();
+    }
+
+    fn on_container_start(&mut self, is_map: bool, mark: Marker) {
+        if matches!(
+            self.stack.last(),
+            Some(YamlFrame::Map {
+                awaiting_key: true,
+                ..
+            })
+        ) {
+            // A mapping or sequence in key position is a complex key: skip both
+            // the key subtree and its value node.
+            self.set_map_awaiting(false);
+            self.pending_key = None;
+            self.facts.uncertainty.push(uncertainty(
+                &self.path,
+                "unsupported_yaml_key",
+                Self::line_of(mark),
+            ));
+            self.skip_nodes = 2;
+            self.skip_depth = 1;
+            return;
+        }
+        self.open_container(is_map);
+    }
+
+    fn on_scalar(&mut self, value: &str, mark: Marker) {
+        let role = match self.stack.last() {
+            Some(YamlFrame::Map {
+                awaiting_key: true, ..
+            }) => ScalarRole::Key,
+            Some(YamlFrame::Map {
+                awaiting_key: false,
+                ..
+            }) => ScalarRole::MapValue,
+            Some(YamlFrame::Seq { .. }) | None => ScalarRole::Other,
+        };
+        match role {
+            ScalarRole::Key => {
+                self.set_map_awaiting(false);
+                let line = Self::line_of(mark);
+                if let Some(key) = literal_config_key(value) {
+                    self.record_key(&key, line);
+                    self.pending_key = Some(key);
+                } else {
+                    self.facts.uncertainty.push(uncertainty(
+                        &self.path,
+                        "unsupported_yaml_key",
+                        line,
+                    ));
+                    self.pending_key = None;
+                    // Skip the value bound to this unsupported key.
+                    self.skip_nodes = 1;
+                    self.skip_depth = 0;
+                }
+            }
+            ScalarRole::MapValue => self.value_completed(),
+            ScalarRole::Other => {}
+        }
+    }
+
+    fn on_alias(&mut self, mark: Marker) {
+        match self.stack.last() {
+            Some(YamlFrame::Map {
+                awaiting_key: true, ..
+            }) => {
+                // An alias in key position is not a literal key.
+                self.set_map_awaiting(false);
+                self.pending_key = None;
+                self.facts.uncertainty.push(uncertainty(
+                    &self.path,
+                    "unsupported_yaml_key",
+                    Self::line_of(mark),
+                ));
+                self.skip_nodes = 1;
+                self.skip_depth = 0;
+            }
+            Some(YamlFrame::Map {
+                awaiting_key: false,
+                ..
+            }) => self.value_completed(),
+            _ => {}
+        }
+    }
+
+    fn record_key(&mut self, key: &str, line: u32) {
+        let dotted = if self.prefix.is_empty() {
+            key.to_string()
+        } else {
+            format!("{}.{}", self.prefix.join("."), key)
+        };
+        for candidate in [key.to_string(), dotted] {
+            if !self
+                .facts
+                .configuration_reads
+                .iter()
+                .any(|read| read.key.as_deref() == Some(candidate.as_str()) && read.line == line)
+            {
+                self.facts
+                    .configuration_reads
+                    .push(StaticConfigurationRead {
+                        path: self.path.clone(),
+                        symbol: None,
+                        access: "yaml".into(),
+                        key: Some(candidate),
+                        line,
+                    });
+            }
+        }
+    }
+}
+
+impl MarkedEventReceiver for YamlKeyReceiver {
+    fn on_event(&mut self, event: Event, mark: Marker) {
+        if self.skip_nodes > 0 {
+            match event {
+                Event::MappingStart(..) | Event::SequenceStart(..) => self.skip_depth += 1,
+                Event::MappingEnd | Event::SequenceEnd => {
+                    self.skip_depth -= 1;
+                    if self.skip_depth == 0 {
+                        self.skip_nodes -= 1;
+                    }
+                }
+                Event::Scalar(..) | Event::Alias(..) if self.skip_depth == 0 => {
+                    self.skip_nodes -= 1;
+                }
+                _ => {}
+            }
+            if self.skip_nodes == 0 {
+                self.value_completed();
+            }
+            return;
+        }
+        match event {
+            Event::DocumentStart => {
+                // Balanced streams unwind on their own; reset defensively so one
+                // document cannot leak prefix state into the next.
+                self.stack.clear();
+                self.prefix.clear();
+                self.pending_key = None;
+            }
+            Event::MappingStart(..) => self.on_container_start(true, mark),
+            Event::SequenceStart(..) => self.on_container_start(false, mark),
+            Event::MappingEnd | Event::SequenceEnd => self.close_container(),
+            Event::Scalar(value, _, _, _) => self.on_scalar(&value, mark),
+            Event::Alias(_) => self.on_alias(mark),
+            _ => {}
+        }
+    }
 }
 
 /// Returns the literal path in a TOML table header. A trailing comment is
@@ -1516,6 +1771,8 @@ fn language_for(path: &str) -> StaticLanguage {
         StaticLanguage::Json
     } else if path.ends_with(".ini") || path.ends_with(".cfg") || path.ends_with(".conf") {
         StaticLanguage::Ini
+    } else if path.ends_with(".yaml") || path.ends_with(".yml") {
+        StaticLanguage::Yaml
     } else {
         StaticLanguage::Unsupported
     }
@@ -1857,6 +2114,75 @@ mod tests {
         // Non-INI `.conf` lines without a delimiter invent no keys.
         let nginx = analyze_artifact("config/site.conf", "server {\n    listen 80;\n}\n").unwrap();
         assert!(nginx.configuration_reads.is_empty());
+    }
+
+    #[test]
+    fn valid_yaml_keys_are_source_bound_without_guessing_complex_keys() {
+        let facts = analyze_artifact(
+            "config/runtime.yaml",
+            "server:\n  port: 8080\n  hosts:\n    - alpha\n    - beta\nlist:\n  - name: one\n\"weird key\": 1\n? [a, b]\n: mapped\n",
+        )
+        .unwrap();
+
+        assert_eq!(facts.artifacts[0].language, StaticLanguage::Yaml);
+        // The `yaml` access token round-trips validation against the language.
+        validate_static_facts(&facts).unwrap();
+        // A nested scalar key keeps both its bare and dotted spellings.
+        assert!(facts.configuration_reads.iter().any(|read| {
+            read.key.as_deref() == Some("port") && read.line == 2 && read.access == "yaml"
+        }));
+        assert!(facts
+            .configuration_reads
+            .iter()
+            .any(|read| read.key.as_deref() == Some("server.port") && read.line == 2));
+        // Sequence elements are not keys, but a mapping inside a sequence is.
+        assert!(!facts
+            .configuration_reads
+            .iter()
+            .any(|read| read.key.as_deref() == Some("alpha")));
+        assert!(facts
+            .configuration_reads
+            .iter()
+            .any(|read| read.key.as_deref() == Some("list.name") && read.line == 7));
+        // A quoted key with a space is not literal and is left unmapped.
+        assert!(!facts
+            .configuration_reads
+            .iter()
+            .any(|read| read.key.as_deref() == Some("weird key")));
+        // Both the spaced key (line 8) and the complex `[a, b]` key (line 9) are uncertain.
+        assert!(facts
+            .uncertainty
+            .iter()
+            .any(|item| item.reason == "unsupported_yaml_key" && item.line == 8));
+        assert!(facts
+            .uncertainty
+            .iter()
+            .any(|item| item.reason == "unsupported_yaml_key" && item.line == 9));
+        // A merge key `<<` is not literal and its alias value is skipped, while
+        // the literal keys around it are still extracted.
+        let merge = analyze_artifact(
+            "config/merge.yaml",
+            "base: &base\n  timeout: 30\nderived:\n  <<: *base\n  port: 8080\n",
+        )
+        .unwrap();
+        assert!(merge
+            .uncertainty
+            .iter()
+            .any(|item| item.reason == "unsupported_yaml_key"));
+        assert!(!merge
+            .configuration_reads
+            .iter()
+            .any(|read| read.key.as_deref() == Some("<<")));
+        assert!(merge
+            .configuration_reads
+            .iter()
+            .any(|read| read.key.as_deref() == Some("derived.port")));
+        assert!(merge
+            .configuration_reads
+            .iter()
+            .any(|read| read.key.as_deref() == Some("base.timeout")));
+        // A malformed document fails the whole parse.
+        assert!(analyze_artifact("config/broken.yaml", "a: [1, 2\n").is_err());
     }
 
     #[test]

@@ -73,15 +73,26 @@ review is still pending.
   of an invented key, and non-INI `.conf` lines (which carry no delimiter) invent
   nothing. `bar-coverage` maps these keys through the existing traceability seam
   with no change; the addition persists no new state and needs no migration.
-- Richer freshness policies, configuration formats beyond TOML, JSON, and INI (for
-  example YAML, which would introduce a new parser dependency), and broader
-  contract-to-code semantics remain Phase 6 work.
+- `bar-static` also extracts direct, literal YAML (`.yaml`, `.yml`) mapping keys,
+  so a contract can name a YAML setting the way it already names TOML, JSON, and
+  INI keys. Parsing uses `yaml-rust2`'s marked event stream (the one added
+  dependency: maintained, pure-Rust, no `unsafe`) so every key stays source-bound
+  to its line. Extraction mirrors the JSON analyzer and stays conservative: nested
+  keys keep both their bare and dotted spellings, sequence elements never receive
+  invented indexes, and only literal scalar keys (the shared
+  alphanumeric/`_`/`-`/`.` charset) become `configuration` reads. Quoted-with-
+  special-characters, aliased, merge (`<<`), and complex (mapping or sequence)
+  keys record `unsupported_yaml_key` uncertainty and are skipped, never guessed;
+  CI-directory YAML stays classified as CI and is not analyzed as configuration.
+  Like INI, this persists no new state and needs no migration.
+- Richer freshness policies and broader contract-to-code semantics remain Phase 6
+  work.
 
 ### Current verification
 
-Verified on 2026-07-20:
+Verified on 2026-07-21:
 
-- `cargo test --workspace --all-targets` — 151 passed, 0 failed.
+- `cargo test --workspace --all-targets` — 152 passed, 0 failed.
 - `cargo clippy --workspace --all-targets -- -D warnings` — clean.
 - `cargo fmt --all -- --check` — clean.
 - `cargo audit` — no advisories reported.

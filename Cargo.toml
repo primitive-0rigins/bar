@@ -48,6 +48,7 @@ tempfile = "3"
 tree-sitter = "0.25.10"
 tree-sitter-python = "0.25.0"
 tree-sitter-rust = "0.24.2"
+yaml-rust2 = "0.11"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
