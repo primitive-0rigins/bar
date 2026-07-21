@@ -16,10 +16,14 @@ result.
   store (SQLite/PostgreSQL), read-only target and revision identity,
   incremental artifact inventory, source-bound contract extraction with
   hierarchy and conflict adjudication, Rust/Python static architecture facts,
-  deterministic contract-to-code traceability, and revision-bound shadow
-  finding candidates. `cargo test --workspace` exercises all of it.
-- **In progress** — proof obligations (Phase 6); the Phase 5 static adapter is
-  implemented and awaiting human review.
+  deterministic contract-to-code traceability, proof obligations with
+  revision-freshness policies, and revision-bound shadow finding candidates.
+  `cargo test --workspace` exercises all of it.
+- **Awaiting human review** — the Phase 5 static adapter and the Phase 6
+  traceability, proof-obligation, and freshness implementation (completion
+  evidence under `docs/phase-evidence/`).
+- **In progress** — the static finding engine (Phase 7); its
+  missing-implementation candidate foundation is in place.
 - **Not yet built** — daemon watchers and target scheduling, runtime evidence
   capture, the human-approval workflow, coding-agent handoff, and post-change
   verification.

@@ -2,16 +2,22 @@
 
 Living status of the Behavioral Assurance Runtime build. Newest first.
 
-## Current phase: 6 — Traceability and proof obligations (foundation in progress)
+## Current phase: 6 — Traceability and proof obligations (implementation complete, human review pending)
 
-Phase 4 implementation is complete: scope precedence, temporal validity,
-supersession, and operator adjudication are durable and fail safe. Phase 5
-delivers shadow-only static architecture facts while keeping unknown code
-explicit. Its completion record is
-[`docs/phase-evidence/phase-5.md`](docs/phase-evidence/phase-5.md); human
-review is still pending.
+Phase 6 implementation is complete: contracts map to code, tests, and
+TOML/JSON/INI/YAML configuration through unique source-bound facts; authority
+guards and state transitions are traceable targets; proof obligations are
+immutable, revision-bound, and evidence-level enforced; and freshness is
+policy-driven (`Pinned` / `ReferenceStable`). Both exit criteria are met —
+unmapped versus unproven are distinct types and evidence levels are enforced.
+The completion record is
+[`docs/phase-evidence/phase-6.md`](docs/phase-evidence/phase-6.md); human review
+is pending, as is Phase 5's
+[`docs/phase-evidence/phase-5.md`](docs/phase-evidence/phase-5.md). Next is the
+Phase 7 static finding engine, whose missing-implementation candidate foundation
+is already seeded.
 
-### Phase 6 started
+### Phase 6 delivered
 
 - `bar-coverage` maps only explicit closed Markdown code spans in a source-bound
   contract statement to one unique, validated static symbol, test, literal
