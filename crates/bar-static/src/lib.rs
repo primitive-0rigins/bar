@@ -18,6 +18,7 @@ pub enum StaticLanguage {
     Python,
     Toml,
     Json,
+    Ini,
     Unsupported,
 }
 
@@ -199,6 +200,7 @@ pub fn analyze_artifact(path: &str, text: &str) -> Result<StaticFacts> {
         StaticLanguage::Python => analyze_python(path, text),
         StaticLanguage::Toml => analyze_toml(path, text),
         StaticLanguage::Json => analyze_json(path, text),
+        StaticLanguage::Ini => analyze_ini(path, text),
         StaticLanguage::Unsupported => {
             let mut facts = StaticFacts::for_artifact(path, StaticLanguage::Unsupported);
             facts
@@ -370,6 +372,7 @@ fn configuration_access_is_valid(language: StaticLanguage, access: &str) -> bool
         StaticLanguage::Python => matches!(access, "os.getenv" | "os.environ.get" | "os.environ"),
         StaticLanguage::Toml => access == "toml",
         StaticLanguage::Json => access == "json",
+        StaticLanguage::Ini => access == "ini",
         StaticLanguage::Unsupported => false,
     }
 }
@@ -688,6 +691,86 @@ fn literal_toml_path(value: &str) -> Vec<String> {
         return Vec::new();
     }
     segments.into_iter().map(ToString::to_string).collect()
+}
+
+/// Extracts direct, literal INI-family keys (`.ini`, `.cfg`, `.conf`) by line.
+/// There is no strict INI grammar or validator dependency, so keys are read
+/// conservatively: only `key = value` / `key : value` entries with a literal
+/// alphanumeric/`_`/`-`/`.` key are emitted, each in its bare and
+/// section-qualified spelling. Quoted keys, malformed headers, and lines without
+/// a delimiter (typical of non-INI `.conf` files) contribute no invented keys.
+fn analyze_ini(path: &str, text: &str) -> Result<StaticFacts> {
+    let mut facts = StaticFacts::for_artifact(path, StaticLanguage::Ini);
+    let mut section: Option<String> = None;
+    for (index, raw_line) in text.lines().enumerate() {
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
+            continue;
+        }
+        let source_line = u32::try_from(index + 1)
+            .map_err(|_| Error::Corrupt("INI source line exceeds u32".into()))?;
+        if line.starts_with('[') {
+            match ini_header(line) {
+                Some(name) => section = Some(name),
+                None => {
+                    facts
+                        .uncertainty
+                        .push(uncertainty(path, "unsupported_ini_key", source_line))
+                }
+            }
+            continue;
+        }
+        let Some(delimiter) = line.find(['=', ':']) else {
+            continue;
+        };
+        let Some(key) = ini_literal_key(&line[..delimiter]) else {
+            facts
+                .uncertainty
+                .push(uncertainty(path, "unsupported_ini_key", source_line));
+            continue;
+        };
+        let candidates = match &section {
+            Some(section) => vec![key.clone(), format!("{section}.{key}")],
+            None => vec![key],
+        };
+        for key in candidates {
+            if !facts
+                .configuration_reads
+                .iter()
+                .any(|read| read.key.as_deref() == Some(key.as_str()) && read.line == source_line)
+            {
+                facts.configuration_reads.push(StaticConfigurationRead {
+                    path: path.to_string(),
+                    symbol: None,
+                    access: "ini".into(),
+                    key: Some(key),
+                    line: source_line,
+                });
+            }
+        }
+    }
+    Ok(facts)
+}
+
+/// Returns the literal section name inside a strict `[name]` INI header. A header
+/// with trailing content, a missing bracket, or a non-literal name is rejected.
+fn ini_header(line: &str) -> Option<String> {
+    let inner = line.strip_prefix('[')?.strip_suffix(']')?;
+    ini_literal_key(inner)
+}
+
+/// Accepts a single flat INI key or section name using the same literal charset
+/// as TOML keys plus the literal `.`; dots are not treated as nesting here.
+fn ini_literal_key(value: &str) -> Option<String> {
+    let key = value.trim();
+    if key.is_empty()
+        || !key
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
+    {
+        return None;
+    }
+    Some(key.to_string())
 }
 
 /// Returns the literal path in a TOML table header. A trailing comment is
@@ -1431,6 +1514,8 @@ fn language_for(path: &str) -> StaticLanguage {
         StaticLanguage::Toml
     } else if path.ends_with(".json") {
         StaticLanguage::Json
+    } else if path.ends_with(".ini") || path.ends_with(".cfg") || path.ends_with(".conf") {
+        StaticLanguage::Ini
     } else {
         StaticLanguage::Unsupported
     }
@@ -1729,6 +1814,49 @@ mod tests {
             .iter()
             .any(|item| item.reason == "escaped_configuration_key" && item.line == 5));
         assert!(analyze_artifact("config/broken.json", "{\"server\":").is_err());
+    }
+
+    #[test]
+    fn valid_ini_keys_are_source_bound_without_guessing_quoted_keys() {
+        let facts = analyze_artifact(
+            "config/runtime.cfg",
+            "; listener settings\ntop = 1\n[server]\nport = 8080\nurl : http://host\n\"queue name\" = jobs\n",
+        )
+        .unwrap();
+
+        assert_eq!(facts.artifacts[0].language, StaticLanguage::Ini);
+        // The `ini` access token round-trips validation against the artifact language.
+        validate_static_facts(&facts).unwrap();
+        // A key before any section keeps its bare spelling only.
+        assert!(facts.configuration_reads.iter().any(|read| {
+            read.key.as_deref() == Some("top") && read.line == 2 && read.access == "ini"
+        }));
+        // A sectioned key is emitted in both bare and qualified spellings.
+        assert!(facts
+            .configuration_reads
+            .iter()
+            .any(|read| read.key.as_deref() == Some("port") && read.line == 4));
+        assert!(facts
+            .configuration_reads
+            .iter()
+            .any(|read| read.key.as_deref() == Some("server.port") && read.line == 4));
+        // A `:` delimiter is accepted and a `:` inside the value does not split the key.
+        assert!(facts
+            .configuration_reads
+            .iter()
+            .any(|read| read.key.as_deref() == Some("server.url") && read.line == 5));
+        // A quoted / spaced key is not literal and is left unmapped.
+        assert!(!facts
+            .configuration_reads
+            .iter()
+            .any(|read| read.key.as_deref() == Some("queue name")));
+        assert!(facts
+            .uncertainty
+            .iter()
+            .any(|item| item.reason == "unsupported_ini_key" && item.line == 6));
+        // Non-INI `.conf` lines without a delimiter invent no keys.
+        let nginx = analyze_artifact("config/site.conf", "server {\n    listen 80;\n}\n").unwrap();
+        assert!(nginx.configuration_reads.is_empty());
     }
 
     #[test]

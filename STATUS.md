@@ -62,14 +62,26 @@ review is still pending.
   Revision-scoped retrieval revalidates every returned record before later
   review work can use it. Finding lifecycle and false-positive correction
   remain Phase 7 work.
-- Richer freshness policies, configuration formats beyond TOML and JSON, and broader
+- `bar-static` now extracts direct, literal INI-family (`.ini`, `.cfg`, `.conf`)
+  configuration keys, so a source-bound contract can name an INI setting the same
+  way it already names a TOML or JSON key. There is no strict INI grammar or
+  validator dependency, so extraction stays conservative: only `key = value` and
+  `key : value` entries whose key is a literal alphanumeric/`_`/`-`/`.` token
+  become `configuration` reads, emitted in both their bare and section-qualified
+  spellings; a `:` inside a value never splits the key. Quoted or spaced keys and
+  malformed `[section]` headers record `unsupported_ini_key` uncertainty instead
+  of an invented key, and non-INI `.conf` lines (which carry no delimiter) invent
+  nothing. `bar-coverage` maps these keys through the existing traceability seam
+  with no change; the addition persists no new state and needs no migration.
+- Richer freshness policies, configuration formats beyond TOML, JSON, and INI (for
+  example YAML, which would introduce a new parser dependency), and broader
   contract-to-code semantics remain Phase 6 work.
 
 ### Current verification
 
-Verified on 2026-07-16:
+Verified on 2026-07-20:
 
-- `cargo test --workspace --all-targets` — 150 passed, 0 failed.
+- `cargo test --workspace --all-targets` — 151 passed, 0 failed.
 - `cargo clippy --workspace --all-targets -- -D warnings` — clean.
 - `cargo fmt --all -- --check` — clean.
 - `cargo audit` — no advisories reported.
