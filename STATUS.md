@@ -30,22 +30,38 @@ review of it and Phase 5's
   status token fails closed on reload. The `status` column uses the canonical
   finding lifecycle vocabulary so the next increment can add false-positive
   retention without a schema change.
-- Two deliberate scoping notes. The stable identity uses the contract's
+- `Store::reject_static_finding` records an operator's false-positive correction:
+  a `detected` finding transitions to `rejected` (Appendix G), audited as a
+  lifecycle transition, and that correction is **retained across every later
+  scan** — `promote_static_findings` leaves a non-`detected` finding untouched
+  (neither advancing its occurrence window nor reopening it, spec Appendix H.5:
+  only an active finding updates occurrence), surfaced as a `retained` count.
+  Re-rejecting is idempotent; an empty reason, an unknown finding, or a forged
+  status token all fail closed. Authorization of *who* may correct a finding
+  (approver role, signed job) is Phase 14; this increment provides only the
+  durable, replay-safe retention of the correction itself. No new migration: the
+  correction lives in the existing `status` column.
+- Three deliberate scoping notes. The stable identity uses the contract's
   `exact_text_sha256` rather than H.5's `normalized_active_contract_ids`, so two
   distinct contracts with byte-identical cited text and the same missing
-  references collapse into one finding (same symptom); and occurrence tracking is
+  references collapse into one finding (same symptom); occurrence tracking is
   monotonic in promotion time, so out-of-order re-scanning of an older revision
-  with a newer clock is not yet ordered by revision. Both are acceptable for the
+  with a newer clock is not yet ordered by revision; and the false-positive
+  correction is represented as `status = rejected` (spec `AssuranceDisposition::
+  false_positive` is not yet a distinct persisted field — the disposition is
+  carried in the audit trail), and the aggregate-vs-retain gate treats only
+  `detected` as aggregating because it is the only status this layer reaches, not
+  because H.5's "active" set is that narrow. All three are acceptable for the
   shadow layer and refined with the finding lifecycle.
-- Finding false-positive/waiver retention (§12.6), additional detector classes
-  (contradiction, dead path, bypass, state, architecture erosion, docs conflict),
-  and the finding dependency graph (§12.4) remain Phase 7 work.
+- Full waiver lifecycle (approval, expiry → reopen, §12.6), additional detector
+  classes (contradiction, dead path, bypass, state, architecture erosion, docs
+  conflict), and the finding dependency graph (§12.4) remain Phase 7 work.
 
 ### Current verification
 
 Verified on 2026-07-21:
 
-- `cargo test --workspace --all-targets` — 158 passed, 0 failed.
+- `cargo test --workspace --all-targets` — 159 passed, 0 failed.
 - `cargo clippy --workspace --all-targets -- -D warnings` — clean.
 - `cargo fmt --all -- --check` — clean.
 - `cargo audit` — no advisories reported.

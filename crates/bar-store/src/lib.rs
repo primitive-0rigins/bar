@@ -49,7 +49,7 @@ pub use scope_context::{ScopeContextPersistence, StoredScopeContextEvidence};
 pub use static_facts::{StaticBatchPersistence, StaticFactsPersistence, StoredStaticFacts};
 pub use static_findings::{
     StaticFindingCandidateBatchPersistence, StaticFindingCandidatePersistence,
-    StoredStaticFindingCandidate,
+    StaticFindingPromotion, StoredStaticFinding, StoredStaticFindingCandidate,
 };
 pub use traceability::StoredContractTraceability;
 
@@ -2535,6 +2535,168 @@ mod tests {
             .unwrap();
         assert!(store
             .load_static_finding(&target_id, &fingerprint)
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn false_positive_correction_is_retained_across_replay() {
+        let repo = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(repo.path()).unwrap();
+        let document = "Requests MUST call `authorize`.\n";
+        write_file(&root, "README.md", document.as_bytes());
+        write_file(&root, "src/auth.rs", b"pub fn other() {}\n");
+
+        let (store, _dir) = temp_store().await;
+        let target_id = store
+            .register_target(&tree_target(&root), T0)
+            .await
+            .unwrap()
+            .target_id;
+
+        let scan_and_promote = |revision: RevisionId, ts: u64| {
+            let store = &store;
+            let root = &root;
+            async move {
+                let inventory = bar_discovery::scan(
+                    root,
+                    &bar_discovery::ScanConfig::default(),
+                    &PriorInventory::new(),
+                )
+                .unwrap();
+                store
+                    .persist_inventory(&target_id, &revision, &inventory, ts)
+                    .await
+                    .unwrap();
+                let document_artifact = inventory
+                    .artifacts
+                    .iter()
+                    .find(|artifact| artifact.logical_path == "README.md")
+                    .unwrap();
+                let document_text = bar_contract::ArtifactText::new(
+                    document_artifact.artifact_id(&revision),
+                    &document_artifact.logical_path,
+                    document_artifact.content_sha256.parse().unwrap(),
+                    document,
+                )
+                .unwrap();
+                let contracts = bar_contract::extract_deterministic(&document_text).unwrap();
+                store
+                    .persist_contracts(&target_id, &revision, &contracts, ts + 1)
+                    .await
+                    .unwrap();
+                let batch = bar_static::analyze_inventory(root, &inventory, &revision).unwrap();
+                store
+                    .persist_static_batch(&target_id, &revision, &batch, ts + 2)
+                    .await
+                    .unwrap();
+                let candidates = store
+                    .missing_implementation_candidates(&target_id, &revision)
+                    .await
+                    .unwrap();
+                store
+                    .persist_static_finding_candidates(&target_id, &revision, &candidates, ts + 3)
+                    .await
+                    .unwrap();
+                store
+                    .promote_static_findings(&target_id, &revision, ts + 4)
+                    .await
+                    .unwrap()
+            }
+        };
+
+        let first = store
+            .record_revision(&target_id, &revision("first", None), T0)
+            .await
+            .unwrap()
+            .revision_id;
+        let promotion = scan_and_promote(first, T0).await;
+        assert_eq!(promotion.inserted, 1);
+
+        let candidate = store
+            .missing_implementation_candidates(&target_id, &first)
+            .await
+            .unwrap()
+            .pop()
+            .unwrap();
+        let fingerprint = bar_findings::promote_candidate(&candidate)
+            .unwrap()
+            .finding_fingerprint;
+
+        // An operator corrects the detection as a false positive.
+        store
+            .reject_static_finding(
+                &target_id,
+                &fingerprint,
+                "authorize is provided by the router",
+                T0 + 5,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            store
+                .load_static_finding(&target_id, &fingerprint)
+                .await
+                .unwrap()
+                .status,
+            bar_core::FindingStatus::Rejected
+        );
+
+        // Re-promoting the same revision retains the correction: not aggregated,
+        // not reopened, still rejected.
+        let replay = store
+            .promote_static_findings(&target_id, &first, T0 + 6)
+            .await
+            .unwrap();
+        assert_eq!(
+            replay,
+            StaticFindingPromotion {
+                inserted: 0,
+                aggregated: 0,
+                retained: 1,
+            }
+        );
+
+        // The same symptom recurring at a later revision is still retained: a
+        // rejected finding neither aggregates its occurrence window nor reopens.
+        let second = store
+            .record_revision(&target_id, &revision("second", None), T0 + 10)
+            .await
+            .unwrap()
+            .revision_id;
+        let later = scan_and_promote(second, T0 + 10).await;
+        assert_eq!(
+            later,
+            StaticFindingPromotion {
+                inserted: 0,
+                aggregated: 0,
+                retained: 1,
+            }
+        );
+        let retained = store
+            .load_static_finding(&target_id, &fingerprint)
+            .await
+            .unwrap();
+        assert_eq!(retained.status, bar_core::FindingStatus::Rejected);
+        assert_eq!(retained.last_seen_revision_id, first);
+
+        // Re-rejecting is an idempotent no-op; an empty reason and an unknown
+        // finding both fail closed.
+        store
+            .reject_static_finding(&target_id, &fingerprint, "still a false positive", T0 + 11)
+            .await
+            .unwrap();
+        assert!(store
+            .reject_static_finding(&target_id, &fingerprint, "   ", T0 + 12)
+            .await
+            .is_err());
+        assert!(store
+            .reject_static_finding(
+                &target_id,
+                &bar_core::Sha256Digest::from_bytes([7; 32]),
+                "no such finding",
+                T0 + 13,
+            )
             .await
             .is_err());
     }

@@ -398,6 +398,10 @@ impl StaticFindingCandidateRow {
 pub struct StaticFindingPromotion {
     pub inserted: usize,
     pub aggregated: usize,
+    /// Findings whose candidate recurred at this revision but which carry an
+    /// operator disposition (e.g. a false-positive rejection), so promotion
+    /// leaves them untouched instead of advancing their occurrence window.
+    pub retained: usize,
 }
 
 /// A reloaded, revalidated aggregated finding with its lifecycle provenance.
@@ -466,13 +470,14 @@ impl Store {
         let mut tx = self.pool.begin().await.map_err(storage("begin"))?;
         let mut inserted = 0;
         let mut aggregated = 0;
+        let mut retained = 0;
         for finding in findings.values() {
             let missing_references_json = serde_json::to_string(&finding.missing_references)
                 .map_err(|error| {
                     Error::Corrupt(format!("serialize missing references: {error}"))
                 })?;
-            let existing: Option<(String, String, String, String, i64)> = sqlx::query_as(
-                "SELECT kind, contract_exact_text_sha256, missing_references_json, last_seen_revision_id, last_seen_at_ms \
+            let existing: Option<(String, String, String, String, i64, String)> = sqlx::query_as(
+                "SELECT kind, contract_exact_text_sha256, missing_references_json, last_seen_revision_id, last_seen_at_ms, status \
                  FROM static_findings WHERE target_id = ? AND finding_fingerprint = ?",
             )
             .bind(target_id.to_string())
@@ -515,7 +520,7 @@ impl Store {
                     .await?;
                     inserted += 1;
                 }
-                Some((kind, exact_text, references_json, last_seen, last_seen_at)) => {
+                Some((kind, exact_text, references_json, last_seen, last_seen_at, status)) => {
                     if kind != finding.kind.as_str()
                         || exact_text != finding.contract_exact_text_sha256.to_string()
                         || references_json != missing_references_json
@@ -524,6 +529,21 @@ impl Store {
                             "persisted static finding identity does not match its fingerprint"
                                 .into(),
                         ));
+                    }
+                    // A finding carrying an operator disposition (only a
+                    // false-positive rejection today) is retained: re-detecting
+                    // the same symptom neither advances its occurrence window nor
+                    // reopens it, so the correction survives every replay.
+                    // `detected` is the only status this layer aggregates *by
+                    // current reachability* — it is also the only status
+                    // promotion can produce. Spec Appendix H.5's "active" set is
+                    // broader (e.g. `triaged`, `investigating`), so when the
+                    // lifecycle grows the aggregate-vs-retain status set must be
+                    // defined explicitly rather than inferred from this gate. An
+                    // unknown token fails closed here as it does on reload.
+                    if finding_status_from_token(&status)? != FindingStatus::Detected {
+                        retained += 1;
+                        continue;
                     }
                     // Replay or stale re-promotion is a no-op: only a strictly
                     // newer promotion (monotonic in a forward scan) advances the
@@ -562,7 +582,75 @@ impl Store {
         Ok(StaticFindingPromotion {
             inserted,
             aggregated,
+            retained,
         })
+    }
+
+    /// Records an operator's false-positive correction: this finding is not a
+    /// real defect. Per Appendix G a `detected` finding transitions to
+    /// `rejected`; the correction is durable and audited as a lifecycle
+    /// transition, and `promote_static_findings` retains it across every later
+    /// scan. Re-rejecting an already-rejected finding is an idempotent no-op; any
+    /// other current status fails closed, since this shadow layer only produces
+    /// `detected` findings. Authorization of *who* may correct a finding is
+    /// Phase 14 (human approval); this increment provides only the durable,
+    /// replay-safe retention of the correction itself.
+    pub async fn reject_static_finding(
+        &self,
+        target_id: &TargetId,
+        finding_fingerprint: &Sha256Digest,
+        reason: &str,
+        now_ms: u64,
+    ) -> Result<()> {
+        if reason.trim().is_empty() {
+            return Err(Error::Corrupt(
+                "false-positive correction requires a reason".into(),
+            ));
+        }
+        // Revalidate the finding's identity and status before mutating it.
+        let stored = self
+            .load_static_finding(target_id, finding_fingerprint)
+            .await?;
+        match stored.status {
+            FindingStatus::Rejected => return Ok(()),
+            FindingStatus::Detected => {}
+            _ => {
+                return Err(Error::Corrupt(
+                    "only a detected static finding can be corrected as a false positive".into(),
+                ))
+            }
+        }
+
+        let mut tx = self.pool.begin().await.map_err(storage("begin"))?;
+        let updated = sqlx::query(
+            "UPDATE static_findings SET status = ? \
+             WHERE target_id = ? AND finding_fingerprint = ? AND status = ?",
+        )
+        .bind(FindingStatus::Rejected.as_str())
+        .bind(target_id.to_string())
+        .bind(finding_fingerprint.to_string())
+        .bind(FindingStatus::Detected.as_str())
+        .execute(&mut *tx)
+        .await
+        .map_err(storage("reject static finding"))?;
+        if updated.rows_affected() != 1 {
+            return Err(Error::Corrupt(
+                "false-positive correction did not apply to exactly one detected finding".into(),
+            ));
+        }
+        append_audit(
+            &mut tx,
+            AuditEvent {
+                category: AuditCategory::LifecycleTransition,
+                actor: SYSTEM_ACTOR.to_string(),
+                summary: format!("corrected shadow static finding as a false positive: {reason}"),
+                subject: Some(finding_fingerprint.to_string()),
+                occurred_at_ms: now_ms,
+            },
+        )
+        .await?;
+        tx.commit().await.map_err(storage("commit"))?;
+        Ok(())
     }
 
     /// Reloads and revalidates one aggregated finding, failing closed on a forged
