@@ -85,14 +85,26 @@ review is still pending.
   keys record `unsupported_yaml_key` uncertainty and are skipped, never guessed;
   CI-directory YAML stays classified as CI and is not analyzed as configuration.
   Like INI, this persists no new state and needs no migration.
-- Richer freshness policies and broader contract-to-code semantics remain Phase 6
-  work.
+- `bar-coverage` traceability now also resolves a contract's closed-code-span
+  reference to two source-bound static facts it previously ignored: **authority
+  checks** (guard-call vocabulary such as `require_permission`) and **state
+  transitions** (qualified variants such as `JobState::Running`). Both carry
+  path/line provenance and a `code` evidence origin, so a contract like "each
+  write MUST pass `require_permission`" or "the job MUST reach
+  `JobState::Completed`" now maps. Recurrence is handled by the existing model,
+  not new logic: a guard or state set at multiple sites, or a name shared with a
+  symbol, resolves `ambiguous` rather than a guessed unique match. State
+  *definitions* are deliberately excluded — they are already traceable as
+  symbols. No migration; the store's live traceability seam picks up the new
+  targets from already-persisted static facts.
+- Richer freshness policies and broader configuration/contract semantics remain
+  Phase 6 work.
 
 ### Current verification
 
 Verified on 2026-07-21:
 
-- `cargo test --workspace --all-targets` — 152 passed, 0 failed.
+- `cargo test --workspace --all-targets` — 153 passed, 0 failed.
 - `cargo clippy --workspace --all-targets -- -D warnings` — clean.
 - `cargo fmt --all -- --check` — clean.
 - `cargo audit` — no advisories reported.

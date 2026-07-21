@@ -20,6 +20,8 @@ pub enum TraceTargetKind {
     Symbol,
     Test,
     Configuration,
+    Authority,
+    State,
 }
 
 /// One unique source-bound static target.
@@ -266,6 +268,9 @@ fn evidence_kind_for(target: TraceTargetKind) -> EvidenceKind {
         TraceTargetKind::Symbol => EvidenceKind::Code,
         TraceTargetKind::Test => EvidenceKind::UnitTest,
         TraceTargetKind::Configuration => EvidenceKind::Configuration,
+        // Authority guards and state transitions are source-derived code facts;
+        // the finer fact type is carried by `TraceTargetKind` itself.
+        TraceTargetKind::Authority | TraceTargetKind::State => EvidenceKind::Code,
     }
 }
 
@@ -305,6 +310,32 @@ fn static_targets(artifacts: &[StaticArtifactFacts]) -> Result<BTreeMap<String, 
                     name: key.to_string(),
                     line: read.line,
                     kind: TraceTargetKind::Configuration,
+                },
+            );
+        }
+        for authority in &artifact.facts.authority_checks {
+            insert_target(
+                &mut targets,
+                &authority.check,
+                TraceTarget {
+                    artifact_id: artifact.artifact_id,
+                    path: authority.path.clone(),
+                    name: authority.check.clone(),
+                    line: authority.line,
+                    kind: TraceTargetKind::Authority,
+                },
+            );
+        }
+        for transition in &artifact.facts.state_transitions {
+            insert_target(
+                &mut targets,
+                &transition.state,
+                TraceTarget {
+                    artifact_id: artifact.artifact_id,
+                    path: transition.path.clone(),
+                    name: transition.state.clone(),
+                    line: transition.line,
+                    kind: TraceTargetKind::State,
                 },
             );
         }
@@ -412,13 +443,14 @@ mod tests {
         RevisionId, Sha256Digest,
     };
     use bar_static::{
-        StaticArtifact, StaticArtifactFacts, StaticConfigurationRead, StaticFacts, StaticLanguage,
-        StaticSymbol, StaticTest, SymbolKind,
+        StaticArtifact, StaticArtifactFacts, StaticAuthorityCheck, StaticConfigurationRead,
+        StaticFacts, StaticLanguage, StaticStateTransition, StaticSymbol, StaticTest, SymbolKind,
     };
 
     use super::{
-        assess_proof_obligation, map_explicit_references, ContractTraceability, MappingStatus,
-        ProofObligation, TraceMapping, TraceTarget, TraceTargetKind, UnresolvedReference,
+        assess_proof_obligation, evidence_kind_for, map_explicit_references, ContractTraceability,
+        MappingStatus, ProofObligation, TraceMapping, TraceTarget, TraceTargetKind,
+        UnresolvedReference,
     };
 
     fn artifact_id(byte: u8) -> ArtifactId {
@@ -595,6 +627,107 @@ mod tests {
             traces[0].mappings[0].target.kind,
             TraceTargetKind::Configuration
         );
+    }
+
+    #[test]
+    fn valid_authority_and_state_facts_are_traceable() {
+        // A guard and a state transition each resolve uniquely, with source
+        // provenance and a code evidence origin.
+        let mut artifact = facts(artifact_id(1), "src/svc.rs", "serve", 3);
+        artifact.facts.authority_checks.push(StaticAuthorityCheck {
+            path: "src/svc.rs".into(),
+            symbol: Some("serve".into()),
+            check: "require_permission".into(),
+            line: 5,
+        });
+        artifact
+            .facts
+            .state_transitions
+            .push(StaticStateTransition {
+                path: "src/svc.rs".into(),
+                symbol: Some("serve".into()),
+                field: "job.state".into(),
+                state: "JobState::Running".into(),
+                line: 9,
+            });
+        let traces = map_explicit_references(
+            &[claim(
+                "Each write MUST pass `require_permission` then reach `JobState::Running`.",
+                9,
+            )],
+            &[artifact],
+        )
+        .unwrap();
+
+        assert_eq!(traces[0].status, MappingStatus::Mapped);
+        let authority = traces[0]
+            .mappings
+            .iter()
+            .find(|mapping| mapping.reference == "require_permission")
+            .unwrap();
+        assert_eq!(authority.target.kind, TraceTargetKind::Authority);
+        assert_eq!(authority.target.path, "src/svc.rs");
+        assert_eq!(authority.target.line, 5);
+        assert_eq!(evidence_kind_for(authority.target.kind), EvidenceKind::Code);
+        let state = traces[0]
+            .mappings
+            .iter()
+            .find(|mapping| mapping.reference == "JobState::Running")
+            .unwrap();
+        assert_eq!(state.target.kind, TraceTargetKind::State);
+        assert_eq!(state.target.line, 9);
+        assert_eq!(evidence_kind_for(state.target.kind), EvidenceKind::Code);
+
+        // The same guard used at two sites is not a unique target: ambiguous.
+        let mut repeated = facts(artifact_id(2), "src/two.rs", "handle", 3);
+        for line in [5, 6] {
+            repeated.facts.authority_checks.push(StaticAuthorityCheck {
+                path: "src/two.rs".into(),
+                symbol: Some("handle".into()),
+                check: "require_permission".into(),
+                line,
+            });
+        }
+        let traces = map_explicit_references(
+            &[claim("Writes MUST pass `require_permission`.", 9)],
+            &[repeated],
+        )
+        .unwrap();
+        assert_eq!(traces[0].status, MappingStatus::Ambiguous);
+
+        // A name shared by a symbol and a guard is genuinely ambiguous, not a
+        // silent symbol match.
+        let mut shared = facts(artifact_id(3), "src/guard.rs", "require_permission", 2);
+        shared.facts.authority_checks.push(StaticAuthorityCheck {
+            path: "src/guard.rs".into(),
+            symbol: Some("caller".into()),
+            check: "require_permission".into(),
+            line: 8,
+        });
+        let traces = map_explicit_references(
+            &[claim("Writes MUST pass `require_permission`.", 9)],
+            &[shared],
+        )
+        .unwrap();
+        assert_eq!(traces[0].status, MappingStatus::Ambiguous);
+
+        // The same recurrence rule holds for a state reached at two sites.
+        let mut restate = facts(artifact_id(4), "src/state.rs", "advance", 3);
+        for line in [7, 12] {
+            restate.facts.state_transitions.push(StaticStateTransition {
+                path: "src/state.rs".into(),
+                symbol: Some("advance".into()),
+                field: "job.state".into(),
+                state: "JobState::Running".into(),
+                line,
+            });
+        }
+        let traces = map_explicit_references(
+            &[claim("The job MUST reach `JobState::Running`.", 9)],
+            &[restate],
+        )
+        .unwrap();
+        assert_eq!(traces[0].status, MappingStatus::Ambiguous);
     }
 
     #[test]
