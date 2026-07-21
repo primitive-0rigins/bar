@@ -1,7 +1,7 @@
 use bar_contract::{claim_fingerprint, ExtractedClaim, SourceRef};
 use bar_core::{
-    ArtifactId, ContractId, ContractLevel, EvidenceKind, NormativeKind, ProofId, RevisionId,
-    Sha256Digest,
+    ArtifactId, ContractId, ContractLevel, EvidenceKind, FreshnessPolicy, NormativeKind, ProofId,
+    RevisionId, Sha256Digest,
 };
 use bar_coverage::{assess_proof_obligation, map_explicit_references, ProofObligation};
 use bar_static::{analyze_artifact, StaticArtifactFacts};
@@ -41,9 +41,11 @@ fn main() -> bar_core::Result<()> {
             contract_fingerprint: claim.fingerprint,
             required_evidence_levels: vec![EvidenceKind::Code],
             freshness_revision: revision,
+            freshness_policy: FreshnessPolicy::Pinned,
         },
         &trace,
         &revision,
+        false,
     )?;
 
     println!("mapping status: {:?}", trace.status);

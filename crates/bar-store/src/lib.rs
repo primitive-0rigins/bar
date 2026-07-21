@@ -2173,6 +2173,7 @@ mod tests {
             contract_fingerprint: traces[0].contract.claim.fingerprint,
             required_evidence_levels: vec![bar_core::EvidenceKind::Code],
             freshness_revision: revision_id,
+            freshness_policy: bar_core::FreshnessPolicy::Pinned,
         };
         assert!(
             store
@@ -2253,6 +2254,148 @@ mod tests {
             10,
             "the later revision, other target/revision, and first proof declaration mutate the audit chain"
         );
+    }
+
+    #[tokio::test]
+    async fn reference_stable_proof_freshness_follows_referenced_symbol() {
+        let repo = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(repo.path()).unwrap();
+        let document = "Requests MUST call `authorize`.\n";
+        write_file(&root, "README.md", document.as_bytes());
+        write_file(&root, "src/auth.rs", b"pub fn authorize() {}\n");
+
+        let (store, _dir) = temp_store().await;
+        let target_id = store
+            .register_target(&tree_target(&root), T0)
+            .await
+            .unwrap()
+            .target_id;
+
+        // Declared revision: contract, inventory, and static facts all persisted.
+        let declared = store
+            .record_revision(&target_id, &revision("declared", None), T0)
+            .await
+            .unwrap()
+            .revision_id;
+        let persist_all = |revision: RevisionId, ts: u64, with_contracts: bool| {
+            let store = &store;
+            let root = &root;
+            async move {
+                let inventory = bar_discovery::scan(
+                    root,
+                    &bar_discovery::ScanConfig::default(),
+                    &PriorInventory::new(),
+                )
+                .unwrap();
+                store
+                    .persist_inventory(&target_id, &revision, &inventory, ts)
+                    .await
+                    .unwrap();
+                if with_contracts {
+                    let document_artifact = inventory
+                        .artifacts
+                        .iter()
+                        .find(|artifact| artifact.logical_path == "README.md")
+                        .unwrap();
+                    let document_text = bar_contract::ArtifactText::new(
+                        document_artifact.artifact_id(&revision),
+                        &document_artifact.logical_path,
+                        document_artifact.content_sha256.parse().unwrap(),
+                        document,
+                    )
+                    .unwrap();
+                    let contracts = bar_contract::extract_deterministic(&document_text).unwrap();
+                    store
+                        .persist_contracts(&target_id, &revision, &contracts, ts + 1)
+                        .await
+                        .unwrap();
+                }
+                let batch = bar_static::analyze_inventory(root, &inventory, &revision).unwrap();
+                store
+                    .persist_static_batch(&target_id, &revision, &batch, ts + 2)
+                    .await
+                    .unwrap();
+            }
+        };
+        persist_all(declared, T0, true).await;
+
+        let contract_id = store
+            .map_contract_traceability(&target_id, &declared)
+            .await
+            .unwrap()[0]
+            .contract
+            .contract_id;
+        let contract_fingerprint = store
+            .map_contract_traceability(&target_id, &declared)
+            .await
+            .unwrap()[0]
+            .contract
+            .claim
+            .fingerprint;
+        let obligation = bar_coverage::ProofObligation {
+            proof_id: bar_core::ProofId::generate(),
+            contract_id,
+            contract_fingerprint,
+            required_evidence_levels: vec![bar_core::EvidenceKind::Code],
+            freshness_revision: declared,
+            freshness_policy: bar_core::FreshnessPolicy::ReferenceStable,
+        };
+        store
+            .persist_proof_obligation(&target_id, &declared, &obligation, T0 + 3)
+            .await
+            .unwrap();
+
+        // A later revision that still exposes `authorize` keeps the proof fresh.
+        write_file(
+            &root,
+            "src/auth.rs",
+            b"pub fn authorize() {} // unchanged behavior\n",
+        );
+        let kept = store
+            .record_revision(&target_id, &revision("kept", None), T0 + 5)
+            .await
+            .unwrap()
+            .revision_id;
+        persist_all(kept, T0 + 5, false).await;
+        let kept_assessment = store
+            .assess_persisted_proof_obligation_at_revision(&obligation.proof_id, &kept)
+            .await
+            .unwrap();
+        assert_eq!(
+            kept_assessment.assessment.status,
+            bar_core::ProofStatus::Mapped,
+            "reference still resolves, so the proof stays fresh across the revision"
+        );
+
+        // A later revision where `authorize` is gone makes the proof stale.
+        write_file(&root, "src/auth.rs", b"pub fn other() {}\n");
+        let removed = store
+            .record_revision(&target_id, &revision("removed", None), T0 + 9)
+            .await
+            .unwrap()
+            .revision_id;
+        persist_all(removed, T0 + 9, false).await;
+        let removed_assessment = store
+            .assess_persisted_proof_obligation_at_revision(&obligation.proof_id, &removed)
+            .await
+            .unwrap();
+        assert_eq!(
+            removed_assessment.assessment.status,
+            bar_core::ProofStatus::Stale,
+            "the referenced symbol disappeared, so the proof is stale"
+        );
+
+        // An unknown persisted freshness policy fails closed on reload.
+        sqlx::query("UPDATE proof_obligations SET freshness_policy = ? WHERE proof_id = ?")
+            .bind("bogus")
+            .bind(obligation.proof_id.to_string())
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        assert!(store
+            .load_proof_obligation(&obligation.proof_id)
+            .await
+            .is_err());
     }
 
     #[tokio::test]

@@ -2,12 +2,15 @@
 
 use bar_audit::{AuditCategory, AuditEvent};
 use bar_core::{
-    ContractId, Error, EvidenceKind, ProofId, Result, RevisionId, Sha256Digest, TargetId,
+    ContractId, Error, EvidenceKind, FreshnessPolicy, ProofId, Result, RevisionId, Sha256Digest,
+    TargetId,
 };
 use bar_coverage::{
-    assess_proof_obligation, evidence_kind_from_token, validate_proof_obligation,
+    assess_proof_obligation, evidence_kind_from_token, freshness_policy_from_token,
+    map_explicit_references, references_still_resolve, validate_proof_obligation,
     ContractTraceability, ProofAssessment, ProofObligation,
 };
+use bar_static::StaticArtifactFacts;
 use sqlx::FromRow;
 
 use crate::{append_audit, required_sqlite_u64, storage, Store, SYSTEM_ACTOR};
@@ -46,6 +49,7 @@ struct ProofObligationRow {
     contract_fingerprint: String,
     required_evidence_json: String,
     freshness_revision_id: String,
+    freshness_policy: String,
     created_at_ms: i64,
     contract_target_id: String,
     contract_revision_id: String,
@@ -95,8 +99,8 @@ impl Store {
             ));
         }
 
-        let existing: Option<(String, String, String, String, String)> = sqlx::query_as(
-            "SELECT contract_id, target_id, revision_id, contract_fingerprint, required_evidence_json \
+        let existing: Option<(String, String, String, String, String, String)> = sqlx::query_as(
+            "SELECT contract_id, target_id, revision_id, contract_fingerprint, required_evidence_json, freshness_policy \
              FROM proof_obligations WHERE proof_id = ?",
         )
         .bind(obligation.proof_id.to_string())
@@ -110,6 +114,7 @@ impl Store {
                 revision_id.to_string(),
                 obligation.contract_fingerprint.to_string(),
                 required_evidence_json.clone(),
+                obligation.freshness_policy.as_str().to_string(),
             );
             if existing != expected {
                 return Err(Error::Corrupt(
@@ -123,8 +128,8 @@ impl Store {
 
         sqlx::query(
             "INSERT INTO proof_obligations \
-             (proof_id, contract_id, target_id, revision_id, contract_fingerprint, required_evidence_json, freshness_revision_id, created_at_ms) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+             (proof_id, contract_id, target_id, revision_id, contract_fingerprint, required_evidence_json, freshness_revision_id, freshness_policy, created_at_ms) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(obligation.proof_id.to_string())
         .bind(obligation.contract_id.to_string())
@@ -133,6 +138,7 @@ impl Store {
         .bind(obligation.contract_fingerprint.to_string())
         .bind(required_evidence_json)
         .bind(obligation.freshness_revision.to_string())
+        .bind(obligation.freshness_policy.as_str())
         .bind(created_at)
         .execute(&mut *tx)
         .await
@@ -157,7 +163,7 @@ impl Store {
     pub async fn load_proof_obligation(&self, proof_id: &ProofId) -> Result<StoredProofObligation> {
         let row: Option<ProofObligationRow> = sqlx::query_as(
             "SELECT p.proof_id, p.contract_id, p.target_id, p.revision_id, p.contract_fingerprint, \
-                    p.required_evidence_json, p.freshness_revision_id, p.created_at_ms, \
+                    p.required_evidence_json, p.freshness_revision_id, p.freshness_policy, p.created_at_ms, \
                     c.target_id AS contract_target_id, c.revision_id AS contract_revision_id, \
                     c.fingerprint AS stored_contract_fingerprint \
              FROM proof_obligations p JOIN contracts c ON c.contract_id = p.contract_id \
@@ -216,20 +222,57 @@ impl Store {
                 "proof assessment revision does not belong to its target".into(),
             ));
         }
-        let traceability = self
+        let stored = self
             .map_contract_traceability(&proof.target_id, &proof.revision_id)
             .await?
             .into_iter()
             .find(|trace| trace.contract.contract_id == proof.obligation.contract_id)
-            .map(|trace| trace.traceability)
             .ok_or_else(|| {
                 Error::Corrupt(format!(
                     "proof obligation {} has no traceability contract",
                     proof.obligation.proof_id
                 ))
             })?;
-        let assessment =
-            assess_proof_obligation(&proof.obligation, &traceability, evaluated_revision)?;
+        let claim = stored.contract.claim;
+        let traceability = stored.traceability;
+
+        // `ReferenceStable` obligations stay fresh at a later revision only while
+        // the contract's mapped references still resolve against that revision's
+        // static facts (spec §400). The declared claim is re-mapped against the
+        // evaluated revision; `Pinned` obligations never consult later facts.
+        let references_still_resolve_at_revision = if *evaluated_revision
+            == proof.obligation.freshness_revision
+        {
+            true
+        } else {
+            match proof.obligation.freshness_policy {
+                FreshnessPolicy::Pinned => false,
+                FreshnessPolicy::ReferenceStable => {
+                    let evaluated_facts = self
+                        .load_static_facts_for_revision(&proof.target_id, evaluated_revision)
+                        .await?
+                        .into_iter()
+                        .map(|stored| StaticArtifactFacts {
+                            artifact_id: stored.artifact_id,
+                            facts: stored.facts,
+                        })
+                        .collect::<Vec<_>>();
+                    let evaluated =
+                        map_explicit_references(std::slice::from_ref(&claim), &evaluated_facts)?
+                            .pop()
+                            .ok_or_else(|| {
+                                Error::Corrupt("evaluated proof traceability missing".into())
+                            })?;
+                    references_still_resolve(&traceability, &evaluated)?
+                }
+            }
+        };
+        let assessment = assess_proof_obligation(
+            &proof.obligation,
+            &traceability,
+            evaluated_revision,
+            references_still_resolve_at_revision,
+        )?;
         Ok(StoredProofAssessment {
             proof,
             evaluated_revision: *evaluated_revision,
@@ -262,6 +305,7 @@ impl ProofObligationRow {
             contract_fingerprint,
             required_evidence_levels: parse_evidence_json(&self.required_evidence_json)?,
             freshness_revision: self.freshness_revision_id.parse()?,
+            freshness_policy: freshness_policy_from_token(&self.freshness_policy)?,
         };
         if obligation.freshness_revision != revision_id {
             return Err(Error::Corrupt(

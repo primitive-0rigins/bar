@@ -97,6 +97,21 @@ persisted_enum! {
 }
 
 persisted_enum! {
+    /// How a proof obligation's freshness is evaluated across revisions
+    /// (spec §10.2 `freshness_policy`, §10.4, §400 freshness detector).
+    ///
+    /// `Pinned` treats any revision other than the declared one as stale.
+    /// `ReferenceStable` keeps a proof fresh across revisions as long as the
+    /// contract's mapped references still resolve — the spec's "referenced
+    /// symbols and mechanisms must still exist" rule — and goes stale only when
+    /// one disappears.
+    FreshnessPolicy {
+        Pinned => "pinned",
+        ReferenceStable => "reference_stable",
+    }
+}
+
+persisted_enum! {
     /// Lifecycle state of a finding (spec §6.3).
     FindingStatus {
         Detected => "detected",
@@ -181,6 +196,7 @@ mod tests {
     token_test!(contract_level_tokens, ContractLevel, 5);
     token_test!(evidence_kind_tokens, EvidenceKind, 13);
     token_test!(proof_status_tokens, ProofStatus, 11);
+    token_test!(freshness_policy_tokens, FreshnessPolicy, 2);
     token_test!(finding_status_tokens, FindingStatus, 18);
     token_test!(repair_kind_tokens, RepairKind, 9);
     token_test!(assurance_disposition_tokens, AssuranceDisposition, 8);

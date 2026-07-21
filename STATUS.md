@@ -97,14 +97,29 @@ review is still pending.
   *definitions* are deliberately excluded — they are already traceable as
   symbols. No migration; the store's live traceability seam picks up the new
   targets from already-persisted static facts.
-- Richer freshness policies and broader configuration/contract semantics remain
-  Phase 6 work.
+- Proof obligations now carry a **freshness policy** (`bar_core::FreshnessPolicy`)
+  instead of a single implicit rule. `Pinned` (the default, and every existing
+  row via migration `0015`) keeps the historical behavior: fresh only at the
+  exact declared revision. `ReferenceStable` encodes the spec's own freshness
+  rule (§92 "stale without contradicted", §400 "referenced symbols and
+  mechanisms must still exist", §10.4): a proof stays fresh at a later revision
+  as long as the contract's mapped references still resolve there, and goes
+  `stale` only when one disappears. The store evaluates this by re-mapping the
+  declared claim against the evaluated revision's persisted static facts — no
+  live action, no new derived state persisted. Migration `0015` adds the
+  immutable per-obligation policy column with a `pinned` default, so old rows and
+  replays are unchanged; an unknown persisted policy token fails closed on
+  reload.
+- Broader configuration formats and cross-contract semantics remain later work;
+  Phase 6's exit criteria (unmapped vs. unproven distinct, evidence levels
+  enforced) and its proof-obligation, traceability, and freshness scope are
+  implemented.
 
 ### Current verification
 
 Verified on 2026-07-21:
 
-- `cargo test --workspace --all-targets` — 153 passed, 0 failed.
+- `cargo test --workspace --all-targets` — 156 passed, 0 failed.
 - `cargo clippy --workspace --all-targets -- -D warnings` — clean.
 - `cargo fmt --all -- --check` — clean.
 - `cargo audit` — no advisories reported.

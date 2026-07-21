@@ -9,8 +9,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use bar_contract::{validate_extracted_claim, ExtractedClaim};
 use bar_core::{
-    ArtifactId, ContractId, Error, EvidenceKind, ProofId, ProofStatus, Result, RevisionId,
-    Sha256Digest,
+    ArtifactId, ContractId, Error, EvidenceKind, FreshnessPolicy, ProofId, ProofStatus, Result,
+    RevisionId, Sha256Digest,
 };
 use bar_static::{validate_static_facts, StaticArtifactFacts, StaticTest};
 
@@ -83,6 +83,7 @@ pub struct ProofObligation {
     pub contract_fingerprint: Sha256Digest,
     pub required_evidence_levels: Vec<EvidenceKind>,
     pub freshness_revision: RevisionId,
+    pub freshness_policy: FreshnessPolicy,
 }
 
 /// Result of checking only the declared mapping-level requirements. A status of
@@ -176,13 +177,22 @@ fn validate_trace_target(reference: &str, target: &TraceTarget) -> Result<()> {
     Ok(())
 }
 
-/// Evaluates an explicit trace against a declared, exact-revision evidence
-/// requirement. Stale inputs take precedence over mapping support; unsatisfied
-/// requirements remain `Unproven` rather than becoming a weaker proof claim.
+/// Evaluates an explicit trace against a declared evidence requirement. Stale
+/// inputs take precedence over mapping support; unsatisfied requirements remain
+/// `Unproven` rather than becoming a weaker proof claim.
+///
+/// Freshness depends on the obligation's [`FreshnessPolicy`]. A `Pinned`
+/// obligation is fresh only at its exact declared revision. A `ReferenceStable`
+/// obligation additionally stays fresh at a later revision when
+/// `references_still_resolve` is `true` — the caller supplies that after
+/// checking the contract's mapped references against the evaluated revision's
+/// static facts (spec §400). `references_still_resolve` is ignored for `Pinned`
+/// and at the declared revision.
 pub fn assess_proof_obligation(
     obligation: &ProofObligation,
     traceability: &ContractTraceability,
     evaluated_revision: &RevisionId,
+    references_still_resolve: bool,
 ) -> Result<ProofAssessment> {
     validate_proof_obligation(obligation)?;
     validate_contract_traceability(traceability)?;
@@ -212,7 +222,12 @@ pub fn assess_proof_obligation(
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect();
-    let status = if obligation.freshness_revision != *evaluated_revision {
+    let fresh = *evaluated_revision == obligation.freshness_revision
+        || match obligation.freshness_policy {
+            FreshnessPolicy::Pinned => false,
+            FreshnessPolicy::ReferenceStable => references_still_resolve,
+        };
+    let status = if !fresh {
         ProofStatus::Stale
     } else if traceability.status != MappingStatus::Mapped || !missing_evidence_levels.is_empty() {
         ProofStatus::Unproven
@@ -261,6 +276,34 @@ pub fn evidence_kind_from_token(token: &str) -> Result<EvidenceKind> {
         .copied()
         .find(|kind| kind.as_str() == token)
         .ok_or_else(|| Error::Corrupt(format!("unknown proof evidence kind `{token}`")))
+}
+
+/// Parses one closed persisted freshness-policy token, failing closed on an
+/// unknown value.
+pub fn freshness_policy_from_token(token: &str) -> Result<FreshnessPolicy> {
+    FreshnessPolicy::VARIANTS
+        .iter()
+        .copied()
+        .find(|policy| policy.as_str() == token)
+        .ok_or_else(|| Error::Corrupt(format!("unknown proof freshness policy `{token}`")))
+}
+
+/// Whether every reference that resolved in `declared` still resolves to a
+/// same-kind target in `evaluated`. This is the `ReferenceStable` freshness
+/// check: the referenced symbols and mechanisms must still exist (spec §400).
+/// Both inputs are validated before comparison.
+pub fn references_still_resolve(
+    declared: &ContractTraceability,
+    evaluated: &ContractTraceability,
+) -> Result<bool> {
+    validate_contract_traceability(declared)?;
+    validate_contract_traceability(evaluated)?;
+    Ok(declared.mappings.iter().all(|declared_mapping| {
+        evaluated.mappings.iter().any(|evaluated_mapping| {
+            evaluated_mapping.reference == declared_mapping.reference
+                && evaluated_mapping.target.kind == declared_mapping.target.kind
+        })
+    }))
 }
 
 fn evidence_kind_for(target: TraceTargetKind) -> EvidenceKind {
@@ -439,8 +482,8 @@ pub fn explicit_references(statement: &str) -> Vec<String> {
 mod tests {
     use bar_contract::{claim_fingerprint, ExtractedClaim, SourceRef};
     use bar_core::{
-        ArtifactId, ContractId, ContractLevel, EvidenceKind, NormativeKind, ProofId, ProofStatus,
-        RevisionId, Sha256Digest,
+        ArtifactId, ContractId, ContractLevel, EvidenceKind, FreshnessPolicy, NormativeKind,
+        ProofId, ProofStatus, RevisionId, Sha256Digest,
     };
     use bar_static::{
         StaticArtifact, StaticArtifactFacts, StaticAuthorityCheck, StaticConfigurationRead,
@@ -448,9 +491,9 @@ mod tests {
     };
 
     use super::{
-        assess_proof_obligation, evidence_kind_for, map_explicit_references, ContractTraceability,
-        MappingStatus, ProofObligation, TraceMapping, TraceTarget, TraceTargetKind,
-        UnresolvedReference,
+        assess_proof_obligation, evidence_kind_for, freshness_policy_from_token,
+        map_explicit_references, references_still_resolve, ContractTraceability, MappingStatus,
+        ProofObligation, TraceMapping, TraceTarget, TraceTargetKind, UnresolvedReference,
     };
 
     fn artifact_id(byte: u8) -> ArtifactId {
@@ -821,10 +864,11 @@ mod tests {
             contract_fingerprint: contract,
             required_evidence_levels: vec![EvidenceKind::Code],
             freshness_revision: revision(1),
+            freshness_policy: FreshnessPolicy::Pinned,
         };
         let mut traceability = mapped_trace(contract, TraceTargetKind::Symbol);
         traceability.status = MappingStatus::Unmapped;
-        assert!(assess_proof_obligation(&obligation, &traceability, &revision(1)).is_err());
+        assert!(assess_proof_obligation(&obligation, &traceability, &revision(1), false).is_err());
     }
 
     #[test]
@@ -836,11 +880,13 @@ mod tests {
             contract_fingerprint: contract,
             required_evidence_levels: vec![EvidenceKind::Code, EvidenceKind::UnitTest],
             freshness_revision: revision(1),
+            freshness_policy: FreshnessPolicy::Pinned,
         };
         let code_only = assess_proof_obligation(
             &obligation,
             &mapped_trace(contract, TraceTargetKind::Symbol),
             &revision(1),
+            false,
         )
         .unwrap();
         assert_eq!(code_only.status, ProofStatus::Unproven);
@@ -854,6 +900,7 @@ mod tests {
             &test_only,
             &mapped_trace(contract, TraceTargetKind::Test),
             &revision(1),
+            false,
         )
         .unwrap();
         assert_eq!(test.status, ProofStatus::TestSupported);
@@ -882,6 +929,7 @@ mod tests {
             },
             &partial,
             &revision(1),
+            false,
         )
         .unwrap();
         assert_eq!(partial_assessment.status, ProofStatus::Unproven);
@@ -898,11 +946,13 @@ mod tests {
             contract_fingerprint: contract,
             required_evidence_levels: vec![EvidenceKind::Configuration],
             freshness_revision: revision(1),
+            freshness_policy: FreshnessPolicy::Pinned,
         };
         let stale = assess_proof_obligation(
             &obligation,
             &mapped_trace(contract, TraceTargetKind::Configuration),
             &revision(2),
+            false,
         )
         .unwrap();
         assert_eq!(stale.status, ProofStatus::Stale);
@@ -915,7 +965,92 @@ mod tests {
             &invalid,
             &mapped_trace(contract, TraceTargetKind::Configuration),
             &revision(1),
+            false,
         )
         .is_err());
+    }
+
+    #[test]
+    fn reference_stable_policy_stays_fresh_while_references_resolve() {
+        let contract = Sha256Digest::from_bytes([9; 32]);
+        let obligation = ProofObligation {
+            proof_id: ProofId::generate(),
+            contract_id: ContractId::generate(),
+            contract_fingerprint: contract,
+            required_evidence_levels: vec![EvidenceKind::Code],
+            freshness_revision: revision(1),
+            freshness_policy: FreshnessPolicy::ReferenceStable,
+        };
+        let declared = mapped_trace(contract, TraceTargetKind::Symbol);
+
+        // The reference still resolves at a later revision: not stale.
+        let evaluated_same = mapped_trace(contract, TraceTargetKind::Symbol);
+        let stable = references_still_resolve(&declared, &evaluated_same).unwrap();
+        assert!(stable);
+        let fresh = assess_proof_obligation(&obligation, &declared, &revision(2), stable).unwrap();
+        assert_eq!(fresh.status, ProofStatus::Mapped);
+
+        // The reference no longer resolves: stale.
+        let evaluated_missing = ContractTraceability {
+            contract_fingerprint: contract,
+            status: MappingStatus::Unmapped,
+            mappings: Vec::new(),
+            unresolved: vec![UnresolvedReference::Missing {
+                reference: "target".into(),
+            }],
+        };
+        let unstable = references_still_resolve(&declared, &evaluated_missing).unwrap();
+        assert!(!unstable);
+        let stale =
+            assess_proof_obligation(&obligation, &declared, &revision(2), unstable).unwrap();
+        assert_eq!(stale.status, ProofStatus::Stale);
+
+        // Resolving to a different target kind is not stability.
+        let evaluated_kind = mapped_trace(contract, TraceTargetKind::Test);
+        assert!(!references_still_resolve(&declared, &evaluated_kind).unwrap());
+
+        // A pinned obligation ignores reference stability and is stale off-revision.
+        let pinned = ProofObligation {
+            freshness_policy: FreshnessPolicy::Pinned,
+            ..obligation
+        };
+        let pinned_stale = assess_proof_obligation(&pinned, &declared, &revision(2), true).unwrap();
+        assert_eq!(pinned_stale.status, ProofStatus::Stale);
+
+        // Persisted freshness tokens round-trip and fail closed on the unknown.
+        assert_eq!(
+            freshness_policy_from_token("reference_stable").unwrap(),
+            FreshnessPolicy::ReferenceStable
+        );
+        assert!(freshness_policy_from_token("bogus").is_err());
+
+        // Stability requires *every* reference to survive: if one of two
+        // references disappears, the proof is no longer reference-stable.
+        let symbol = |name: &str, line: u32| TraceMapping {
+            reference: name.into(),
+            target: TraceTarget {
+                artifact_id: artifact_id(1),
+                path: "src/a.rs".into(),
+                name: name.into(),
+                line,
+                kind: TraceTargetKind::Symbol,
+            },
+        };
+        let two_references = ContractTraceability {
+            contract_fingerprint: contract,
+            status: MappingStatus::Mapped,
+            mappings: vec![symbol("authorize", 1), symbol("audit", 2)],
+            unresolved: Vec::new(),
+        };
+        let one_survives = ContractTraceability {
+            contract_fingerprint: contract,
+            status: MappingStatus::PartiallyMapped,
+            mappings: vec![symbol("authorize", 1)],
+            unresolved: vec![UnresolvedReference::Missing {
+                reference: "audit".into(),
+            }],
+        };
+        assert!(!references_still_resolve(&two_references, &one_survives).unwrap());
+        assert!(references_still_resolve(&two_references, &two_references).unwrap());
     }
 }
