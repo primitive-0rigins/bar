@@ -17,13 +17,15 @@ result.
   incremental artifact inventory, source-bound contract extraction with
   hierarchy and conflict adjudication, Rust/Python static architecture facts,
   deterministic contract-to-code traceability, proof obligations with
-  revision-freshness policies, and revision-bound shadow finding candidates.
-  `cargo test --workspace` exercises all of it.
+  revision-freshness policies, revision-bound shadow finding candidates, and
+  replay-safe aggregated missing-implementation, contradiction, and
+  documentation-conflict findings. `cargo test --workspace` exercises all of it.
 - **Awaiting human review** — the Phase 5 static adapter and the Phase 6
   traceability, proof-obligation, and freshness implementation (completion
   evidence under `docs/phase-evidence/`).
-- **In progress** — the static finding engine (Phase 7); its
-  missing-implementation candidate foundation is in place.
+- **In progress** — the static finding engine (Phase 7); missing-implementation,
+  contradiction, and documentation-conflict findings are in place, while dead
+  path, bypass, state, and architecture-erosion detectors remain.
 - **Not yet built** — daemon watchers and target scheduling, runtime evidence
   capture, the human-approval workflow, coding-agent handoff, and post-change
   verification.
@@ -87,7 +89,7 @@ bar/
 │   ├── bar-contract/  # source-bound claims, hierarchy, glossary, conflicts
 │   ├── bar-static/    # shadow static architecture facts (Phase 5 foundation)
 │   ├── bar-coverage/  # deterministic contract-to-static-fact traceability
-│   ├── bar-findings/  # shadow static-finding candidates (Phase 7 foundation)
+│   ├── bar-findings/  # shadow finding detection and stable aggregation
 │   ├── bar-bench/     # resource benchmark harness (spec §4, §22)
 │   └── bar-daemon/    # the mandatory model-free process (spec §5.1)
 ├── migrations/        # root SQL migrations, embedded at compile time
