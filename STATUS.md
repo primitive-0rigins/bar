@@ -53,15 +53,32 @@ review of it and Phase 5's
   `detected` as aggregating because it is the only status this layer reaches, not
   because H.5's "active" set is that narrow. All three are acceptable for the
   shadow layer and refined with the finding lifecycle.
-- Full waiver lifecycle (approval, expiry → reopen, §12.6), additional detector
-  classes (contradiction, dead path, bypass, state, architecture erosion, docs
-  conflict), and the finding dependency graph (§12.4) remain Phase 7 work.
+- A second detector class, **contradiction**, promotes the persisted conflict
+  candidates (two directly opposing claims — one `required`, one `prohibited` —
+  over the same normalized subject) into aggregated findings.
+  `Store::promote_contradiction_findings` mirrors the missing-implementation
+  finding layer (migration `0017`, its own table): insert as `detected`,
+  aggregate `last_seen_*`, replay no-op, and retain an operator-rejected finding
+  untouched; `Store::reject_contradiction_finding` records the same false-positive
+  correction. Its stable identity (Appendix H.5) is the `contradiction` class,
+  the two claims' revision-stable cited-text hashes (sorted, so the pair order is
+  irrelevant), and the shared subject — resolved at promotion time by joining each
+  claim's fingerprint to its single source row. A contradiction is **provisional
+  by construction**: the static layer cannot see contract scope, so an apparent
+  contradiction may be a scoped exception (spec §"scoped exception, not
+  contradiction") the operator corrects — `detected` is not a definitive
+  contradiction label. It is a separate table, not a column-generalized reuse of
+  `static_findings`, because the two classes' identities do not overlap; a shared
+  abstraction is deferred until several classes prove a real commonality.
+- Full waiver lifecycle (approval, expiry → reopen, §12.6), the remaining detector
+  classes (dead path, bypass, state, architecture erosion, docs conflict), and the
+  finding dependency graph (§12.4) remain Phase 7 work.
 
 ### Current verification
 
 Verified on 2026-07-21:
 
-- `cargo test --workspace --all-targets` — 159 passed, 0 failed.
+- `cargo test --workspace --all-targets` — 161 passed, 0 failed.
 - `cargo clippy --workspace --all-targets -- -D warnings` — clean.
 - `cargo fmt --all -- --check` — clean.
 - `cargo audit` — no advisories reported.

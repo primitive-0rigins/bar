@@ -33,6 +33,7 @@ use sqlx::{FromRow, Transaction};
 
 mod attestation;
 mod context_resolution;
+mod contradiction_findings;
 mod proof_obligations;
 mod ruling;
 mod scope_context;
@@ -41,6 +42,7 @@ mod static_findings;
 mod traceability;
 
 pub use attestation::{ScopeContextAttestationPersistence, StoredScopeContextAttestation};
+pub use contradiction_findings::{ContradictionPromotion, StoredContradictionFinding};
 pub use proof_obligations::{
     ProofObligationPersistence, StoredProofAssessment, StoredProofObligation,
 };
@@ -2697,6 +2699,198 @@ mod tests {
                 "no such finding",
                 T0 + 13,
             )
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn contradiction_finding_promotes_aggregates_and_retains_correction() {
+        let repo = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(repo.path()).unwrap();
+        // Two directly opposing claims over the same subject: one required, one
+        // prohibited. The static layer cannot see scope, so this is a provisional
+        // contradiction an operator may later correct as a scoped exception.
+        let document = "Requests MUST reach the ledger.\n\nRequests MUST NOT reach the ledger.\n";
+        write_file(&root, "README.md", document.as_bytes());
+
+        let (store, _dir) = temp_store().await;
+        let target_id = store
+            .register_target(&tree_target(&root), T0)
+            .await
+            .unwrap()
+            .target_id;
+
+        let scan_and_promote = |revision: RevisionId, ts: u64| {
+            let store = &store;
+            let root = &root;
+            async move {
+                let inventory = bar_discovery::scan(
+                    root,
+                    &bar_discovery::ScanConfig::default(),
+                    &PriorInventory::new(),
+                )
+                .unwrap();
+                store
+                    .persist_inventory(&target_id, &revision, &inventory, ts)
+                    .await
+                    .unwrap();
+                let document_artifact = inventory
+                    .artifacts
+                    .iter()
+                    .find(|artifact| artifact.logical_path == "README.md")
+                    .unwrap();
+                let document_text = bar_contract::ArtifactText::new(
+                    document_artifact.artifact_id(&revision),
+                    &document_artifact.logical_path,
+                    document_artifact.content_sha256.parse().unwrap(),
+                    document,
+                )
+                .unwrap();
+                let corpus =
+                    bar_contract::analyze_corpus(std::slice::from_ref(&document_text)).unwrap();
+                store
+                    .persist_contracts(&target_id, &revision, &corpus.claims, ts + 1)
+                    .await
+                    .unwrap();
+                store
+                    .persist_analysis_candidates(&target_id, &revision, &corpus, ts + 2)
+                    .await
+                    .unwrap();
+                let promotion = store
+                    .promote_contradiction_findings(&target_id, &revision, ts + 3)
+                    .await
+                    .unwrap();
+                (promotion, corpus)
+            }
+        };
+
+        let first = store
+            .record_revision(&target_id, &revision("first", None), T0)
+            .await
+            .unwrap()
+            .revision_id;
+        let (promotion, corpus) = scan_and_promote(first, T0).await;
+        assert_eq!(
+            promotion,
+            ContradictionPromotion {
+                inserted: 1,
+                aggregated: 0,
+                retained: 0,
+            }
+        );
+
+        // Reconstruct the stable finding fingerprint from the conflict's two
+        // claims' revision-stable cited-text hashes.
+        let conflict = &corpus.conflicts[0];
+        let exact = |fingerprint: &bar_core::Sha256Digest| {
+            corpus
+                .claims
+                .iter()
+                .find(|claim| claim.fingerprint == *fingerprint)
+                .unwrap()
+                .source
+                .exact_text_sha256
+        };
+        let fingerprint = bar_findings::contradiction_finding(
+            exact(&conflict.left_fingerprint),
+            exact(&conflict.right_fingerprint),
+            &conflict.shared_subject,
+        )
+        .unwrap()
+        .finding_fingerprint;
+        let finding = store
+            .load_contradiction_finding(&target_id, &fingerprint)
+            .await
+            .unwrap();
+        assert_eq!(finding.status, bar_core::FindingStatus::Detected);
+        assert_eq!(finding.first_seen_revision_id, first);
+
+        // The same conflict at a later revision aggregates into the one finding.
+        let second = store
+            .record_revision(&target_id, &revision("second", None), T0 + 10)
+            .await
+            .unwrap()
+            .revision_id;
+        let (aggregate, _) = scan_and_promote(second, T0 + 10).await;
+        assert_eq!(
+            aggregate,
+            ContradictionPromotion {
+                inserted: 0,
+                aggregated: 1,
+                retained: 0,
+            }
+        );
+        assert_eq!(
+            store
+                .load_contradiction_finding(&target_id, &fingerprint)
+                .await
+                .unwrap()
+                .last_seen_revision_id,
+            second
+        );
+
+        // An operator corrects it as a scoped exception (false positive).
+        store
+            .reject_contradiction_finding(
+                &target_id,
+                &fingerprint,
+                "the two claims are scoped to different deployments",
+                T0 + 15,
+            )
+            .await
+            .unwrap();
+
+        // The conflict recurring at a third revision is retained, not reopened,
+        // and its occurrence window does not advance past the rejection.
+        let third = store
+            .record_revision(&target_id, &revision("third", None), T0 + 20)
+            .await
+            .unwrap()
+            .revision_id;
+        let (later, _) = scan_and_promote(third, T0 + 20).await;
+        assert_eq!(
+            later,
+            ContradictionPromotion {
+                inserted: 0,
+                aggregated: 0,
+                retained: 1,
+            }
+        );
+        let retained = store
+            .load_contradiction_finding(&target_id, &fingerprint)
+            .await
+            .unwrap();
+        assert_eq!(retained.status, bar_core::FindingStatus::Rejected);
+        assert_eq!(retained.last_seen_revision_id, second);
+
+        // Re-rejecting is idempotent; an empty reason and an unknown finding fail
+        // closed; a forged status token fails closed on reload.
+        store
+            .reject_contradiction_finding(&target_id, &fingerprint, "still scoped", T0 + 21)
+            .await
+            .unwrap();
+        assert!(store
+            .reject_contradiction_finding(&target_id, &fingerprint, "   ", T0 + 22)
+            .await
+            .is_err());
+        assert!(store
+            .reject_contradiction_finding(
+                &target_id,
+                &bar_core::Sha256Digest::from_bytes([7; 32]),
+                "no such finding",
+                T0 + 23,
+            )
+            .await
+            .is_err());
+        sqlx::query(
+            "UPDATE contradiction_findings SET status = 'bogus' WHERE finding_fingerprint = ?",
+        )
+        .bind(fingerprint.to_string())
+        .execute(&store.pool)
+        .await
+        .unwrap();
+        assert!(store
+            .load_contradiction_finding(&target_id, &fingerprint)
             .await
             .is_err());
     }

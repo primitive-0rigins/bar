@@ -712,7 +712,7 @@ impl StaticFindingRow {
     }
 }
 
-fn finding_status_from_token(token: &str) -> Result<FindingStatus> {
+pub(crate) fn finding_status_from_token(token: &str) -> Result<FindingStatus> {
     FindingStatus::VARIANTS
         .iter()
         .copied()

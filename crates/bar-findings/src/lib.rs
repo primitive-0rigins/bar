@@ -72,6 +72,73 @@ pub struct StaticFinding {
     pub missing_references: Vec<String>,
 }
 
+/// A stable, revision-independent contradiction finding: two directly opposing
+/// contract claims (one `required`, one `prohibited`) over the same normalized
+/// subject. Its identity (spec Appendix H.5) is the finding class, the two
+/// claims' revision-stable cited-text hashes sorted so the pair order is
+/// irrelevant, and the shared subject — never a revision-scoped contract id — so
+/// the same conflict aggregates across revisions. It is provisional by
+/// construction: the static layer cannot see contract scope, so an apparent
+/// contradiction may be a scoped exception (spec §"scoped exception, not
+/// contradiction") an operator corrects as a false positive; it is never a
+/// definitive contradiction label.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContradictionFinding {
+    pub finding_fingerprint: Sha256Digest,
+    /// The lexicographically smaller of the two claims' cited-text hashes.
+    pub left_exact_text_sha256: Sha256Digest,
+    /// The lexicographically larger of the two claims' cited-text hashes.
+    pub right_exact_text_sha256: Sha256Digest,
+    pub shared_subject: String,
+}
+
+/// Builds a contradiction finding from the two opposing claims' revision-stable
+/// cited-text hashes and their shared subject. The pair is sorted so the finding
+/// identity is independent of which claim is "left", then revalidated.
+pub fn contradiction_finding(
+    one_exact_text_sha256: Sha256Digest,
+    other_exact_text_sha256: Sha256Digest,
+    shared_subject: &str,
+) -> Result<ContradictionFinding> {
+    let (left, right) = if one_exact_text_sha256 <= other_exact_text_sha256 {
+        (one_exact_text_sha256, other_exact_text_sha256)
+    } else {
+        (other_exact_text_sha256, one_exact_text_sha256)
+    };
+    let finding = ContradictionFinding {
+        finding_fingerprint: contradiction_fingerprint(left, right, shared_subject),
+        left_exact_text_sha256: left,
+        right_exact_text_sha256: right,
+        shared_subject: shared_subject.to_string(),
+    };
+    validate_contradiction_finding(&finding)?;
+    Ok(finding)
+}
+
+/// Revalidates a contradiction finding before it crosses into durable storage or
+/// review: a nonempty subject, a sorted cited-text pair, and a fingerprint that
+/// matches its contents. Fails closed.
+pub fn validate_contradiction_finding(finding: &ContradictionFinding) -> Result<()> {
+    if finding.shared_subject.is_empty()
+        || finding.left_exact_text_sha256 > finding.right_exact_text_sha256
+    {
+        return Err(Error::Corrupt(
+            "contradiction finding has an empty subject or unordered claim pair".into(),
+        ));
+    }
+    let expected = contradiction_fingerprint(
+        finding.left_exact_text_sha256,
+        finding.right_exact_text_sha256,
+        &finding.shared_subject,
+    );
+    if finding.finding_fingerprint != expected {
+        return Err(Error::Corrupt(
+            "contradiction finding fingerprint does not match its contents".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Promotes one validated candidate into its stable finding identity. The
 /// candidate is revalidated first, so a forged candidate cannot mint a finding.
 pub fn promote_candidate(candidate: &StaticFindingCandidate) -> Result<StaticFinding> {
@@ -285,6 +352,25 @@ fn finding_fingerprint(
     for reference in missing_references {
         hash_part(&mut hasher, reference.as_bytes());
     }
+    Sha256Digest::from_bytes(hasher.finalize().into())
+}
+
+/// The stable contradiction identity (spec Appendix H.5): the
+/// `contract_contradiction` class (spec §"FindingClass"), the two claims'
+/// revision-stable cited-text hashes (already sorted by the caller), and the
+/// shared subject. The distinct class token domain-separates it from a
+/// missing-implementation fingerprint, so the two can never collide.
+fn contradiction_fingerprint(
+    left_exact_text_sha256: Sha256Digest,
+    right_exact_text_sha256: Sha256Digest,
+    shared_subject: &str,
+) -> Sha256Digest {
+    let mut hasher = Sha256::new();
+    hash_part(&mut hasher, b"static_finding");
+    hash_part(&mut hasher, b"contract_contradiction");
+    hash_part(&mut hasher, left_exact_text_sha256.to_string().as_bytes());
+    hash_part(&mut hasher, right_exact_text_sha256.to_string().as_bytes());
+    hash_part(&mut hasher, shared_subject.as_bytes());
     Sha256Digest::from_bytes(hasher.finalize().into())
 }
 
@@ -576,6 +662,39 @@ mod tests {
         let mut unsorted = finding_one.clone();
         unsorted.missing_references = vec!["b".into(), "a".into()];
         assert!(validate_static_finding(&unsorted).is_err());
+    }
+
+    #[test]
+    fn contradiction_finding_identity_is_pair_order_independent() {
+        use super::{contradiction_finding, validate_contradiction_finding};
+        let one = Sha256Digest::from_bytes([1; 32]);
+        let other = Sha256Digest::from_bytes([2; 32]);
+
+        // The pair order does not change the finding.
+        let a = contradiction_finding(one, other, "requests reach the ledger").unwrap();
+        let b = contradiction_finding(other, one, "requests reach the ledger").unwrap();
+        assert_eq!(a, b);
+        assert_eq!(a.left_exact_text_sha256, one);
+        assert_eq!(a.right_exact_text_sha256, other);
+
+        // A different subject is a different finding; a missing-implementation
+        // fingerprint over the same hash never collides with a contradiction.
+        let c = contradiction_finding(one, other, "requests bypass the ledger").unwrap();
+        assert_ne!(a.finding_fingerprint, c.finding_fingerprint);
+
+        // Tampering the subject, the ordering, or the fingerprint fails closed.
+        let mut wrong_subject = a.clone();
+        wrong_subject.shared_subject = "bypass the ledger".into();
+        assert!(validate_contradiction_finding(&wrong_subject).is_err());
+        let mut unordered = a.clone();
+        std::mem::swap(
+            &mut unordered.left_exact_text_sha256,
+            &mut unordered.right_exact_text_sha256,
+        );
+        assert!(validate_contradiction_finding(&unordered).is_err());
+        let mut empty_subject = a.clone();
+        empty_subject.shared_subject = String::new();
+        assert!(validate_contradiction_finding(&empty_subject).is_err());
     }
 
     #[test]
