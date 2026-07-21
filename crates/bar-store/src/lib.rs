@@ -2701,6 +2701,18 @@ mod tests {
             )
             .await
             .is_err());
+        // A finding at a known-but-non-detected status (not just a garbage
+        // token) cannot be corrected as a false positive: the wrong-status arm
+        // fails closed rather than silently transitioning it.
+        sqlx::query("UPDATE static_findings SET status = 'triaged' WHERE finding_fingerprint = ?")
+            .bind(fingerprint.to_string())
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        assert!(store
+            .reject_static_finding(&target_id, &fingerprint, "wrong status", T0 + 14)
+            .await
+            .is_err());
     }
 
     #[tokio::test]
@@ -2880,6 +2892,20 @@ mod tests {
                 "no such finding",
                 T0 + 23,
             )
+            .await
+            .is_err());
+        // A finding at a known-but-non-detected status (not just a garbage
+        // token) cannot be corrected as a false positive: the wrong-status arm
+        // fails closed rather than silently transitioning it.
+        sqlx::query(
+            "UPDATE contradiction_findings SET status = 'triaged' WHERE finding_fingerprint = ?",
+        )
+        .bind(fingerprint.to_string())
+        .execute(&store.pool)
+        .await
+        .unwrap();
+        assert!(store
+            .reject_contradiction_finding(&target_id, &fingerprint, "wrong status", T0 + 24)
             .await
             .is_err());
         sqlx::query(
