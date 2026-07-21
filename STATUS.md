@@ -70,15 +70,30 @@ review of it and Phase 5's
   contradiction label. It is a separate table, not a column-generalized reuse of
   `static_findings`, because the two classes' identities do not overlap; a shared
   abstraction is deferred until several classes prove a real commonality.
+- A third detector class, **documentation conflict**, promotes one glossary term
+  carrying two or more conflicting definitions into aggregated findings.
+  `Store::promote_documentation_conflict_findings` (migration `0018`, its own
+  table) reuses `bar_contract::glossary_ambiguities` as the authoritative decision
+  of *which* terms conflict, then builds each finding's identity from the term and
+  the sorted set of its distinct **lowercased-definition** hashes — the same
+  equivalence the detector used, so a whitespace- or case-only edit does not
+  fragment aggregation. Insert as `detected`, aggregate `last_seen_*`, replay
+  no-op, retain an operator-rejected finding untouched;
+  `Store::reject_documentation_conflict_finding` records the same false-positive
+  correction. A documentation conflict is **provisional** (spec §"Operator can
+  resolve a documentation conflict through a versioned ruling"), so `detected` is
+  not a definitive label. Glossary ambiguities have no upstream ruling touchpoint
+  (rulings are contract-claim scoped), so this finding is their first disposition
+  path; wiring findings to versioned rulings is deferred with the waiver lifecycle.
 - Full waiver lifecycle (approval, expiry → reopen, §12.6), the remaining detector
-  classes (dead path, bypass, state, architecture erosion, docs conflict), and the
-  finding dependency graph (§12.4) remain Phase 7 work.
+  classes (dead path, bypass, state, architecture erosion), and the finding
+  dependency graph (§12.4) remain Phase 7 work.
 
 ### Current verification
 
 Verified on 2026-07-21:
 
-- `cargo test --workspace --all-targets` — 161 passed, 0 failed.
+- `cargo test --workspace --all-targets` — 163 passed, 0 failed.
 - `cargo clippy --workspace --all-targets -- -D warnings` — clean.
 - `cargo fmt --all -- --check` — clean.
 - `cargo audit` — no advisories reported.

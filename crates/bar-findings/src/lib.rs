@@ -139,6 +139,97 @@ pub fn validate_contradiction_finding(finding: &ContradictionFinding) -> Result<
     Ok(())
 }
 
+/// A stable, revision-independent documentation-conflict finding: one glossary
+/// term carrying two or more conflicting definitions across the corpus. Its
+/// identity (spec Appendix H.5) is the finding class, the detector's normalized
+/// term, and the sorted set of the term's distinct *lowercased-definition*
+/// hashes — the same equivalence `bar_contract::glossary_ambiguities` uses to
+/// declare the ambiguity, so a whitespace- or case-only edit does not fragment
+/// aggregation, and never a revision-scoped glossary-candidate id, so the same
+/// conflict aggregates across revisions. Like a contradiction it is provisional:
+/// an operator may correct an apparent conflict (spec §"documentation conflict",
+/// resolvable through a versioned ruling) as a false positive.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DocumentationConflictFinding {
+    pub finding_fingerprint: Sha256Digest,
+    pub normalized_term: String,
+    /// Sorted, unique SHA-256 hashes of the term's distinct lowercased
+    /// definitions; length is always at least two.
+    pub definition_text_sha256s: Vec<Sha256Digest>,
+}
+
+/// Builds a documentation-conflict finding from the detector's normalized term
+/// and the raw definitions bound to it. Definitions are lowercased and
+/// de-duplicated into the same equivalence the ambiguity detector used, hashed,
+/// and sorted, so the identity is order- and casing-stable, then revalidated. A
+/// term that resolves to fewer than two distinct definitions is not a conflict
+/// and fails closed.
+pub fn documentation_conflict_finding(
+    normalized_term: &str,
+    definitions: &[String],
+) -> Result<DocumentationConflictFinding> {
+    let definition_text_sha256s: Vec<Sha256Digest> = definitions
+        .iter()
+        .map(|definition| definition.to_lowercase())
+        .collect::<BTreeSet<String>>()
+        .iter()
+        .map(|definition| Sha256Digest::from_bytes(Sha256::digest(definition.as_bytes()).into()))
+        .collect::<BTreeSet<Sha256Digest>>()
+        .into_iter()
+        .collect();
+    documentation_conflict_finding_from_digests(normalized_term, &definition_text_sha256s)
+}
+
+/// Reconstructs a documentation-conflict finding from its persisted identity —
+/// the normalized term and the already sorted-unique definition hashes — then
+/// recomputes the fingerprint and revalidates, so a forged stored row cannot
+/// masquerade as a valid finding. Used on reload, where the raw definitions are
+/// no longer available.
+pub fn documentation_conflict_finding_from_digests(
+    normalized_term: &str,
+    definition_text_sha256s: &[Sha256Digest],
+) -> Result<DocumentationConflictFinding> {
+    let finding = DocumentationConflictFinding {
+        finding_fingerprint: documentation_conflict_fingerprint(
+            normalized_term,
+            definition_text_sha256s,
+        ),
+        normalized_term: normalized_term.to_string(),
+        definition_text_sha256s: definition_text_sha256s.to_vec(),
+    };
+    validate_documentation_conflict_finding(&finding)?;
+    Ok(finding)
+}
+
+/// Revalidates a documentation-conflict finding before it crosses into durable
+/// storage or review: a nonempty term, at least two sorted-unique definition
+/// hashes, and a fingerprint that matches its contents. Fails closed.
+pub fn validate_documentation_conflict_finding(
+    finding: &DocumentationConflictFinding,
+) -> Result<()> {
+    if finding.normalized_term.is_empty()
+        || finding.definition_text_sha256s.len() < 2
+        || !finding
+            .definition_text_sha256s
+            .windows(2)
+            .all(|pair| pair[0] < pair[1])
+    {
+        return Err(Error::Corrupt(
+            "documentation conflict finding has an empty term or an invalid definition set".into(),
+        ));
+    }
+    let expected = documentation_conflict_fingerprint(
+        &finding.normalized_term,
+        &finding.definition_text_sha256s,
+    );
+    if finding.finding_fingerprint != expected {
+        return Err(Error::Corrupt(
+            "documentation conflict finding fingerprint does not match its contents".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Promotes one validated candidate into its stable finding identity. The
 /// candidate is revalidated first, so a forged candidate cannot mint a finding.
 pub fn promote_candidate(candidate: &StaticFindingCandidate) -> Result<StaticFinding> {
@@ -371,6 +462,26 @@ fn contradiction_fingerprint(
     hash_part(&mut hasher, left_exact_text_sha256.to_string().as_bytes());
     hash_part(&mut hasher, right_exact_text_sha256.to_string().as_bytes());
     hash_part(&mut hasher, shared_subject.as_bytes());
+    Sha256Digest::from_bytes(hasher.finalize().into())
+}
+
+/// The stable documentation-conflict identity (spec Appendix H.5): the
+/// `documentation_conflict` class (spec §"FindingClass"), the detector's
+/// normalized term, and the term's distinct lowercased-definition hashes
+/// (already sorted-unique by the caller). The distinct class token
+/// domain-separates it from the other finding fingerprints, so they can never
+/// collide.
+fn documentation_conflict_fingerprint(
+    normalized_term: &str,
+    definition_text_sha256s: &[Sha256Digest],
+) -> Sha256Digest {
+    let mut hasher = Sha256::new();
+    hash_part(&mut hasher, b"static_finding");
+    hash_part(&mut hasher, b"documentation_conflict");
+    hash_part(&mut hasher, normalized_term.as_bytes());
+    for digest in definition_text_sha256s {
+        hash_part(&mut hasher, digest.to_string().as_bytes());
+    }
     Sha256Digest::from_bytes(hasher.finalize().into())
 }
 
@@ -695,6 +806,72 @@ mod tests {
         let mut empty_subject = a.clone();
         empty_subject.shared_subject = String::new();
         assert!(validate_contradiction_finding(&empty_subject).is_err());
+    }
+
+    #[test]
+    fn documentation_conflict_identity_folds_casing_and_order() {
+        use super::{documentation_conflict_finding, validate_documentation_conflict_finding};
+
+        // Definition order and casing do not change the finding: the identity is
+        // the sorted set of distinct lowercased-definition hashes.
+        let a = documentation_conflict_finding(
+            "cache",
+            &["A write-through store".into(), "an in-memory buffer".into()],
+        )
+        .unwrap();
+        let b = documentation_conflict_finding(
+            "cache",
+            &["AN IN-MEMORY BUFFER".into(), "A Write-Through Store".into()],
+        )
+        .unwrap();
+        assert_eq!(a, b);
+        assert_eq!(a.definition_text_sha256s.len(), 2);
+
+        // A term with only one distinct definition (after casing) is not a
+        // conflict; a different definition set is a different finding.
+        assert!(documentation_conflict_finding(
+            "cache",
+            &[
+                "A write-through store".into(),
+                "a WRITE-THROUGH store".into()
+            ],
+        )
+        .is_err());
+        let c = documentation_conflict_finding(
+            "cache",
+            &[
+                "A write-through store".into(),
+                "a disk-backed buffer".into(),
+            ],
+        )
+        .unwrap();
+        assert_ne!(a.finding_fingerprint, c.finding_fingerprint);
+
+        // The set genuinely handles more than two definitions, and adding a
+        // distinct definition to a conflict mints a new finding (H.5 "different
+        // scope → new finding") rather than aggregating into the existing one.
+        let three = documentation_conflict_finding(
+            "cache",
+            &[
+                "A write-through store".into(),
+                "an in-memory buffer".into(),
+                "a disk-backed buffer".into(),
+            ],
+        )
+        .unwrap();
+        assert_eq!(three.definition_text_sha256s.len(), 3);
+        assert_ne!(three.finding_fingerprint, a.finding_fingerprint);
+
+        // Tampering the term, the ordering, or dropping a definition fails closed.
+        let mut wrong_term = a.clone();
+        wrong_term.normalized_term = "buffer".into();
+        assert!(validate_documentation_conflict_finding(&wrong_term).is_err());
+        let mut unordered = a.clone();
+        unordered.definition_text_sha256s.reverse();
+        assert!(validate_documentation_conflict_finding(&unordered).is_err());
+        let mut singleton = a.clone();
+        singleton.definition_text_sha256s.truncate(1);
+        assert!(validate_documentation_conflict_finding(&singleton).is_err());
     }
 
     #[test]
