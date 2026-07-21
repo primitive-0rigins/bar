@@ -85,6 +85,10 @@ review of it and Phase 5's
   not a definitive label. Glossary ambiguities have no upstream ruling touchpoint
   (rulings are contract-claim scoped), so this finding is their first disposition
   path; wiring findings to versioned rulings is deferred with the waiver lifecycle.
+- All three aggregated finding loaders revalidate that their first- and
+  last-seen revisions belong to the finding's target. A valid revision from a
+  different target is treated as corrupt provenance rather than crossing the
+  target-isolation boundary.
 - Full waiver lifecycle (approval, expiry → reopen, §12.6), the remaining detector
   classes (dead path, bypass, state, architecture erosion), and the finding
   dependency graph (§12.4) remain Phase 7 work.

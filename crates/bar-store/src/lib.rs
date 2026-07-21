@@ -2507,6 +2507,45 @@ mod tests {
         assert_eq!(finding.last_seen_revision_id, second);
         assert_eq!(finding.status, bar_core::FindingStatus::Detected);
 
+        // A valid revision belonging to another target is still corrupt
+        // provenance for this finding and must fail closed on reload.
+        let other_repo = tempfile::tempdir().unwrap();
+        let other_root = std::fs::canonicalize(other_repo.path()).unwrap();
+        let other_target = store
+            .register_target(&tree_target(&other_root), T0 + 20)
+            .await
+            .unwrap()
+            .target_id;
+        let other_revision = store
+            .record_revision(&other_target, &revision("other", None), T0 + 20)
+            .await
+            .unwrap()
+            .revision_id;
+        sqlx::query(
+            "UPDATE static_findings SET first_seen_revision_id = ? \
+             WHERE target_id = ? AND finding_fingerprint = ?",
+        )
+        .bind(other_revision.to_string())
+        .bind(target_id.to_string())
+        .bind(fingerprint.to_string())
+        .execute(&store.pool)
+        .await
+        .unwrap();
+        assert!(store
+            .load_static_finding(&target_id, &fingerprint)
+            .await
+            .is_err());
+        sqlx::query(
+            "UPDATE static_findings SET first_seen_revision_id = ? \
+             WHERE target_id = ? AND finding_fingerprint = ?",
+        )
+        .bind(first.to_string())
+        .bind(target_id.to_string())
+        .bind(fingerprint.to_string())
+        .execute(&store.pool)
+        .await
+        .unwrap();
+
         // Re-promoting the same revision is an idempotent replay.
         let replay = store
             .promote_static_findings(&target_id, &second, T0 + 20)
@@ -2821,6 +2860,43 @@ mod tests {
         assert_eq!(finding.status, bar_core::FindingStatus::Detected);
         assert_eq!(finding.first_seen_revision_id, first);
 
+        let other_repo = tempfile::tempdir().unwrap();
+        let other_root = std::fs::canonicalize(other_repo.path()).unwrap();
+        let other_target = store
+            .register_target(&tree_target(&other_root), T0 + 30)
+            .await
+            .unwrap()
+            .target_id;
+        let other_revision = store
+            .record_revision(&other_target, &revision("other-conflict", None), T0 + 30)
+            .await
+            .unwrap()
+            .revision_id;
+        sqlx::query(
+            "UPDATE contradiction_findings SET first_seen_revision_id = ? \
+             WHERE target_id = ? AND finding_fingerprint = ?",
+        )
+        .bind(other_revision.to_string())
+        .bind(target_id.to_string())
+        .bind(fingerprint.to_string())
+        .execute(&store.pool)
+        .await
+        .unwrap();
+        assert!(store
+            .load_contradiction_finding(&target_id, &fingerprint)
+            .await
+            .is_err());
+        sqlx::query(
+            "UPDATE contradiction_findings SET first_seen_revision_id = ? \
+             WHERE target_id = ? AND finding_fingerprint = ?",
+        )
+        .bind(first.to_string())
+        .bind(target_id.to_string())
+        .bind(fingerprint.to_string())
+        .execute(&store.pool)
+        .await
+        .unwrap();
+
         // The same conflict at a later revision aggregates into the one finding.
         let second = store
             .record_revision(&target_id, &revision("second", None), T0 + 10)
@@ -3020,6 +3096,47 @@ mod tests {
         assert_eq!(finding.status, bar_core::FindingStatus::Detected);
         assert_eq!(finding.first_seen_revision_id, first);
         assert_eq!(finding.finding.definition_text_sha256s.len(), 2);
+
+        let other_repo = tempfile::tempdir().unwrap();
+        let other_root = std::fs::canonicalize(other_repo.path()).unwrap();
+        let other_target = store
+            .register_target(&tree_target(&other_root), T0 + 30)
+            .await
+            .unwrap()
+            .target_id;
+        let other_revision = store
+            .record_revision(
+                &other_target,
+                &revision("other-doc-conflict", None),
+                T0 + 30,
+            )
+            .await
+            .unwrap()
+            .revision_id;
+        sqlx::query(
+            "UPDATE documentation_conflict_findings SET first_seen_revision_id = ? \
+             WHERE target_id = ? AND finding_fingerprint = ?",
+        )
+        .bind(other_revision.to_string())
+        .bind(target_id.to_string())
+        .bind(fingerprint.to_string())
+        .execute(&store.pool)
+        .await
+        .unwrap();
+        assert!(store
+            .load_documentation_conflict_finding(&target_id, &fingerprint)
+            .await
+            .is_err());
+        sqlx::query(
+            "UPDATE documentation_conflict_findings SET first_seen_revision_id = ? \
+             WHERE target_id = ? AND finding_fingerprint = ?",
+        )
+        .bind(first.to_string())
+        .bind(target_id.to_string())
+        .bind(fingerprint.to_string())
+        .execute(&store.pool)
+        .await
+        .unwrap();
 
         // The same conflict at a later revision aggregates into the one finding.
         let second = store

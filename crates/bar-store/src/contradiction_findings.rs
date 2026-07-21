@@ -313,6 +313,12 @@ impl Store {
                 "unknown contradiction finding {finding_fingerprint}"
             ))
         })?;
+        self.validate_finding_revision_provenance(
+            target_id,
+            &row.first_seen_revision_id,
+            &row.last_seen_revision_id,
+        )
+        .await?;
         row.into_stored(target_id, finding_fingerprint)
     }
 

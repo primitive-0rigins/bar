@@ -674,7 +674,39 @@ impl Store {
         let row = row.ok_or_else(|| {
             Error::Corrupt(format!("unknown static finding {finding_fingerprint}"))
         })?;
+        self.validate_finding_revision_provenance(
+            target_id,
+            &row.first_seen_revision_id,
+            &row.last_seen_revision_id,
+        )
+        .await?;
         row.into_stored(target_id, finding_fingerprint)
+    }
+
+    pub(crate) async fn validate_finding_revision_provenance(
+        &self,
+        target_id: &TargetId,
+        first_seen_revision_id: &str,
+        last_seen_revision_id: &str,
+    ) -> Result<()> {
+        let ownership: (i64, i64) = sqlx::query_as(
+            "SELECT \
+                 EXISTS(SELECT 1 FROM target_revisions WHERE target_id = ? AND revision_id = ?), \
+                 EXISTS(SELECT 1 FROM target_revisions WHERE target_id = ? AND revision_id = ?)",
+        )
+        .bind(target_id.to_string())
+        .bind(first_seen_revision_id)
+        .bind(target_id.to_string())
+        .bind(last_seen_revision_id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(storage("validate finding revision provenance"))?;
+        if ownership != (1, 1) {
+            return Err(Error::Corrupt(
+                "persisted finding revisions do not belong to its target".into(),
+            ));
+        }
+        Ok(())
     }
 }
 
