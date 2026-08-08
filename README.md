@@ -2,18 +2,18 @@
 
 [![CI](https://github.com/primitive-0rigins/bar/actions/workflows/ci.yml/badge.svg)](https://github.com/primitive-0rigins/bar/actions/workflows/ci.yml)
 
-A lightweight, model-optional assurance daemon written in Rust. You point it at
-one or more software runtimes; it learns each runtime's *intended* behavior from
-the runtime itself, compares that intent against implementation and live
-execution, prepares repair-ready findings, waits for **human approval**, hands
-approved work to a connected coding agent, and then independently verifies the
-result.
+An in-progress, model-optional software assurance system written in Rust. Its
+implemented model-free core inventories a target, extracts source-bound
+behavioral contracts, maps them to static evidence, and persists replay-safe
+findings with explicit provenance. The planned long-running daemon builds on
+that core with live evidence, **human-gated** repair handoff, and independent
+post-change verification.
 
 **Status at a glance**
 
 - **Works today** — the model-free daemon bootstrap, a tamper-evident
-  hash-chained audit log ([demo below](#see-it-catch-tampering)), a relational
-  store (SQLite/PostgreSQL), read-only target and revision identity,
+  hash-chained audit log ([demo below](#see-it-catch-tampering)), a SQLite
+  relational store, read-only target and revision identity,
   incremental artifact inventory, source-bound contract extraction with
   hierarchy and conflict adjudication, Rust/Python static architecture facts,
   deterministic contract-to-code traceability, proof obligations with
@@ -83,7 +83,7 @@ bar/
 │   ├── bar-core/      # IDs, enums, schemas, typed errors
 │   ├── bar-config/    # configuration contract (spec Appendix C)
 │   ├── bar-audit/     # append-only hash-chained audit log
-│   ├── bar-store/     # sqlx store + migrations (SQLite / PostgreSQL)
+│   ├── bar-store/     # sqlx store + migrations (SQLite; PostgreSQL planned)
 │   ├── bar-target/    # read-only target resolution and revision identity
 │   ├── bar-discovery/ # incremental inventory and dependency-aware reparse plans
 │   ├── bar-contract/  # source-bound claims, hierarchy, glossary, conflicts
@@ -125,8 +125,8 @@ validated configuration. Its complete contract is in
 
 ### See it catch tampering
 
-The audit chain is BAR's trust anchor, and it can defend itself in thirty
-seconds:
+The audit chain is BAR's current trust anchor, and its integrity checks can be
+exercised in thirty seconds:
 
 ```sh
 cargo run -p bar-audit --example tamper_evidence
@@ -147,6 +147,11 @@ edited record: REFUSED — corrupt input: audit record 1 content does not match 
 deleted record: REFUSED — corrupt input: audit record at position 0 has seq 1
 reordered records: REFUSED — corrupt input: audit record at position 1 has seq 2
 ```
+
+Internal verification detects edits, insertion, reordering, and removal that
+breaks the remaining sequence. Detecting deletion from the end requires an
+externally retained length and tip; `verify_against_checkpoint` provides that
+check, while durable checkpoint storage is not yet built.
 
 ### See deterministic configuration traceability
 

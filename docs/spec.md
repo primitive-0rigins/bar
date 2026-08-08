@@ -181,7 +181,7 @@ bar/
 ├── crates/  
 │ ├── bar-core/ \# IDs, enums, schemas, errors, clocks  
 │ ├── bar-audit/ \# append-only audit chain  
-│ ├── bar-store/ \# SQLite/PostgreSQL repository  
+│ ├── bar-store/ \# SQLite repository; PostgreSQL backend planned
 │ ├── bar-target/ \# connectors and target identity  
 │ ├── bar-discovery/ \# artifact inventory  
 │ ├── bar-contracts/ \# claims, hierarchy, scope, rulings  
@@ -791,7 +791,7 @@ POST /v1/agent/jobs/{id}/cancel-ack
 
 | **Store**       | **Contents**                                                          | **V1**                                        |
 |-----------------|-----------------------------------------------------------------------|-----------------------------------------------|
-| Relational      | Targets, revisions, contracts, graph edges, findings, approvals, jobs | SQLite local; PostgreSQL production option.   |
+| Relational      | Targets, revisions, contracts, graph edges, findings, approvals, jobs | SQLite local; PostgreSQL backend planned.     |
 | Object/evidence | Large snapshots, traces, reports, patches                             | Content-addressed filesystem.                 |
 | Search          | Docs/code/evidence retrieval                                          | SQLite FTS5; optional embeddings.             |
 | Audit           | Security/workflow history                                             | Hash-chained append-only JSONL plus DB index. |

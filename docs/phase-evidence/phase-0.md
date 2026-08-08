@@ -18,7 +18,7 @@ skeleton, CI, STATUS** (spec §21).
 |---|---|---|
 | Daemon starts model-free | ✅ | `bar-daemon` boots on built-in defaults, logs a model-free readiness summary, exits 0; asserted by `resource_budget.rs`. |
 | Old migrations replay | ✅ | `bar-store::tests::migrations_apply_and_replay` — reopened store applies no duplicate migrations. |
-| Audit tamper test passes | ✅ | `bar-audit` tamper suite: value/timestamp/category/subject mutation, reorder, insertion, truncation, broken link all detected; clean chain verifies. |
+| Audit tamper test passes | ✅ | `bar-audit` tamper suite: value/timestamp/category/subject mutation, reorder, insertion, non-tail removal, and broken links are detected; an external length-and-tip checkpoint detects tail truncation; a clean chain verifies. |
 
 ## Required implementation (spec §21 Phase 0)
 
@@ -47,6 +47,9 @@ resource benchmark harness — all delivered.
   phases that introduce a running service loop and ingestion.
 - Audit JSONL mirror, DB index for signatures, and crash replay beyond reload —
   deferred to later storage work.
+- Durable external audit-checkpoint storage is deferred; until it lands, internal
+  verification alone cannot distinguish a valid prefix from deletion at the end
+  of the chain.
 
 ## tests_added / tests_run / test_results
 

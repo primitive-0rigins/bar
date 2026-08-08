@@ -93,11 +93,25 @@ review of it and Phase 5's
   classes (dead path, bypass, state, architecture erosion), and the finding
   dependency graph (§12.4) remain Phase 7 work.
 
+### Cross-phase hardening
+
+- Audit writes now verify the complete authoritative chain inside the owning
+  transaction before appending, so corruption anywhere in persisted history
+  blocks and rolls back the state mutation. Standalone audit inserts must also
+  extend the verified sequence with the expected predecessor and content hash.
+- `AuditChain::verify_against_checkpoint` accepts an externally retained length
+  and tip to detect deletion from the end of an otherwise valid chain. Durable
+  checkpoint storage remains future work and is documented as such.
+- The implemented relational backend is described consistently as SQLite;
+  PostgreSQL remains planned, and its unused SQLx feature is no longer enabled.
+- `event-listener` is locked to 5.4.2, resolving the transitive unsoundness
+  advisory RUSTSEC-2026-0221 from the prior 5.4.1 lock.
+
 ### Current verification
 
-Verified on 2026-07-21:
+Verified on 2026-08-08:
 
-- `cargo test --workspace --all-targets` — 163 passed, 0 failed.
+- `cargo test --workspace --all-targets` — 166 passed, 0 failed.
 - `cargo clippy --workspace --all-targets -- -D warnings` — clean.
 - `cargo fmt --all -- --check` — clean.
 - `cargo audit` — no advisories reported.
@@ -620,16 +634,18 @@ benchmark harness.
 - `bar-audit`: the append-only, hash-chained audit log (spec §18–19). Each record
   commits (SHA-256 over a length-prefixed canonical encoding) to its
   predecessor's hash. **The tamper test — the Phase-0 exit criterion — passes:**
-  value/timestamp/category/subject mutation, reorder, insertion, truncation, and
-  broken links are all detected; a clean chain verifies. JSONL mirror, DB index,
-  optional signatures, and crash replay are deferred to the storage layer.
+  value/timestamp/category/subject mutation, reorder, insertion, non-tail
+  removal, and broken links are all detected; an external length-and-tip
+  checkpoint detects tail truncation. Durable checkpoint storage, JSONL mirror,
+  optional signatures, and crash replay are deferred to later storage work.
 - `bar-store`: the relational store and migrations (spec §19), on `sqlx` with
-  SQLite locally and PostgreSQL as a production option. Root `migrations/` are
-  embedded at compile time; **replay is idempotent** (a reopened store applies
-  no duplicate migrations — the "old migrations replay" exit criterion). The
-  audit chain persists to a DB-indexed `audit_log` and reloads with stored
-  hashes intact, so a row edited outside BAR fails re-verification. Queries are
-  runtime-checked, so a clean build needs no live database.
+  SQLite; PostgreSQL remains planned. Root `migrations/` are embedded at compile
+  time; **replay is idempotent** (a reopened store applies no duplicate
+  migrations — the "old migrations replay" exit criterion). The audit chain
+  persists to a DB-indexed `audit_log`; the complete chain is verified before
+  each audited mutation, so corrupted history blocks and rolls back the owning
+  transaction. Queries are runtime-checked, so a clean build needs no live
+  database.
 - `bar-bench`: the resource benchmark harness (spec §4, §22). `peak_rss_bytes()`
   reads the process high-water mark from Linux `/proc/self/status` (`VmHWM`) —
   race-free, no sampling loop, no `unsafe`; `None` off `/proc` rather than a

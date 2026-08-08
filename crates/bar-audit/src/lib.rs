@@ -3,13 +3,15 @@
 //! BAR records security- and workflow-relevant events — approvals, waivers,
 //! rulings, access, and lifecycle transitions — in a tamper-evident chain (spec
 //! §18, §19). Each record commits to its predecessor's hash, so altering,
-//! reordering, inserting, or removing any record breaks [`AuditChain::verify`].
+//! reordering, inserting, or removing a non-tail record breaks
+//! [`AuditChain::verify`]. Detecting deletion from the end requires an externally
+//! retained length and tip; [`AuditChain::verify_against_checkpoint`] performs
+//! that check when a checkpoint is available.
 //!
 //! This crate is the storage-agnostic chain primitive. In V1 the relational
-//! store is authoritative and a JSONL mirror is appended asynchronously from
-//! committed rows (spec §6.2, §19); that persistence, the DB index, optional
-//! signatures (spec §18, *optional*), and crash replay live in the storage
-//! layer, not here.
+//! store is authoritative; the planned JSONL mirror will be appended
+//! asynchronously from committed rows (spec §6.2, §19). That mirror, optional
+//! signatures (spec §18), and crash replay live in the storage layer, not here.
 //!
 //! ## Hashing is over canonical bytes, not serde
 //!
@@ -185,9 +187,10 @@ impl AuditChain {
     }
 
     /// Verifies chain integrity: each record's sequence number, its link to the
-    /// previous record's hash, and its recomputed content hash. Any deviation —
-    /// mutation, reorder, insertion, truncation, or a broken link — returns
-    /// [`Error::Corrupt`].
+    /// previous record's hash, and its recomputed content hash. Any mutation,
+    /// reorder, insertion, non-tail removal, or broken link returns
+    /// [`Error::Corrupt`]. Tail removal requires
+    /// [`verify_against_checkpoint`](Self::verify_against_checkpoint).
     pub fn verify(&self) -> Result<()> {
         let mut expected_prev = GENESIS;
         for (index, record) in self.records.iter().enumerate() {
@@ -210,6 +213,24 @@ impl AuditChain {
                 )));
             }
             expected_prev = record.hash;
+        }
+        Ok(())
+    }
+
+    /// Verifies the chain and compares it with an externally retained
+    /// checkpoint. Unlike [`verify`](Self::verify) alone, this detects deletion
+    /// from the end because the expected length and tip live outside the chain
+    /// being checked.
+    pub fn verify_against_checkpoint(
+        &self,
+        expected_len: usize,
+        expected_tip: &Sha256Digest,
+    ) -> Result<()> {
+        self.verify()?;
+        if self.len() != expected_len || self.tip() != *expected_tip {
+            return Err(Error::Corrupt(
+                "audit chain does not match external checkpoint".into(),
+            ));
         }
         Ok(())
     }
@@ -318,12 +339,28 @@ mod tests {
     }
 
     #[test]
-    fn tamper_truncation_is_detected() {
+    fn removing_a_non_tail_record_is_detected() {
         let mut chain = chain_of(4);
-        // Drop the last record but leave an inconsistent seq by removing a middle
-        // record, so the surviving records no longer form a contiguous chain.
+        // Removing a middle record leaves an inconsistent sequence and link.
         chain.records.remove(1);
         assert!(chain.verify().is_err());
+    }
+
+    #[test]
+    fn external_checkpoint_detects_tail_truncation() {
+        let chain = chain_of(4);
+        let expected_len = chain.len();
+        let expected_tip = chain.tip();
+        let mut truncated = chain.records().to_vec();
+        truncated.pop();
+        let truncated = AuditChain::from_records(truncated);
+
+        // The remaining prefix is internally valid. The external checkpoint is
+        // what proves that a committed suffix is missing.
+        truncated.verify().unwrap();
+        assert!(truncated
+            .verify_against_checkpoint(expected_len, &expected_tip)
+            .is_err());
     }
 
     #[test]

@@ -1,9 +1,9 @@
 //! Relational store and schema migrations (spec §19).
 //!
-//! In V1 this is the authoritative store: SQLite locally, with PostgreSQL as a
-//! production option. Migrations live at the workspace root (`migrations/`, per
-//! spec §5) and are embedded at compile time; applying them is idempotent, so a
-//! store re-opened over existing data replays cleanly.
+//! In V1 this is the authoritative SQLite store; PostgreSQL remains a planned
+//! backend. Migrations live at the workspace root (`migrations/`, per spec §5)
+//! and are embedded at compile time; applying them is idempotent, so a store
+//! re-opened over existing data replays cleanly.
 //!
 //! This Phase-0 slice persists the audit chain (bar-audit) as the DB-indexed
 //! audit log and reloads it with its stored hashes intact, so a reloaded chain
@@ -16,7 +16,7 @@
 use std::collections::HashMap;
 use std::str::FromStr;
 
-use bar_audit::{record_hash, AuditCategory, AuditChain, AuditEvent, AuditRecord, GENESIS};
+use bar_audit::{record_hash, AuditCategory, AuditChain, AuditEvent, AuditRecord};
 use bar_contract::scope::{validate_declaration, ContractScope, TemporalWindow};
 use bar_contract::{
     glossary_ambiguities, validate_extracted_claim, ConflictCandidate, CorpusAnalysis,
@@ -90,6 +90,21 @@ impl Store {
 
     /// Persists a sealed audit record.
     pub async fn insert_audit_record(&self, record: &AuditRecord) -> Result<()> {
+        let mut tx = self.pool.begin().await.map_err(storage("begin"))?;
+        let chain = load_verified_audit_chain(&mut tx).await?;
+        let expected_seq = u64::try_from(chain.len())
+            .map_err(|_| Error::Corrupt("audit sequence overflow".into()))?;
+        let expected_prev = chain.tip();
+        let expected_hash = record_hash(record.seq, &record.prev_hash, &record.event);
+        if record.seq != expected_seq
+            || record.prev_hash != expected_prev
+            || record.hash != expected_hash
+        {
+            return Err(Error::Corrupt(
+                "audit record does not extend the verified chain".into(),
+            ));
+        }
+
         let seq = required_sqlite_u64(record.seq, "audit sequence")?;
         let occurred_at = required_sqlite_u64(record.event.occurred_at_ms, "audit timestamp")?;
         sqlx::query(
@@ -105,9 +120,10 @@ impl Store {
         .bind(record.event.subject.as_deref())
         .bind(occurred_at)
         .bind(record.hash.to_string())
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(|e| Error::Storage(format!("insert audit record: {e}")))?;
+        tx.commit().await.map_err(storage("commit"))?;
         Ok(())
     }
 
@@ -1146,25 +1162,15 @@ fn scan_event(target_id: &TargetId, now_ms: u64, kind: &str, detail: Option<Stri
     }
 }
 
-/// Appends one event to the audit chain inside an open transaction, chaining it
-/// to the persisted tip so a later [`AuditChain::verify`] still holds. Reads the
-/// last row's seq and hash rather than the whole chain.
+/// Appends one event to the audit chain inside an open transaction. The complete
+/// persisted chain is verified first so corruption anywhere in authoritative
+/// history blocks the state mutation that owns this transaction.
 async fn append_audit(tx: &mut Transaction<'_, Sqlite>, event: AuditEvent) -> Result<()> {
-    let tip: Option<(i64, String)> =
-        sqlx::query_as("SELECT seq, hash FROM audit_log ORDER BY seq DESC LIMIT 1")
-            .fetch_optional(&mut **tx)
-            .await
-            .map_err(storage("audit tip"))?;
-    let (seq, prev_hash) = match tip {
-        Some((seq, hash)) => (
-            u64::try_from(seq)
-                .map_err(|_| Error::Corrupt("negative audit sequence".into()))?
-                .checked_add(1)
-                .ok_or_else(|| Error::Corrupt("audit sequence overflow".into()))?,
-            Sha256Digest::from_str(&hash)?,
-        ),
-        None => (0, GENESIS),
-    };
+    let chain = load_verified_audit_chain(tx).await?;
+
+    let seq =
+        u64::try_from(chain.len()).map_err(|_| Error::Corrupt("audit sequence overflow".into()))?;
+    let prev_hash = chain.tip();
     let hash = record_hash(seq, &prev_hash, &event);
 
     sqlx::query(
@@ -1187,6 +1193,23 @@ async fn append_audit(tx: &mut Transaction<'_, Sqlite>, event: AuditEvent) -> Re
     .await
     .map_err(storage("insert audit"))?;
     Ok(())
+}
+
+async fn load_verified_audit_chain(tx: &mut Transaction<'_, Sqlite>) -> Result<AuditChain> {
+    let rows: Vec<AuditRow> = sqlx::query_as(
+        "SELECT seq, prev_hash, category, actor, summary, subject, occurred_at_ms, hash \
+         FROM audit_log ORDER BY seq",
+    )
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(storage("verify audit history"))?;
+    let records = rows
+        .into_iter()
+        .map(AuditRow::into_record)
+        .collect::<Result<Vec<_>>>()?;
+    let chain = AuditChain::from_records(records);
+    chain.verify()?;
+    Ok(chain)
 }
 
 /// The actor recorded for events BAR originates itself.
@@ -1696,6 +1719,18 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn standalone_audit_insert_must_extend_the_verified_chain() {
+        let (store, _dir) = temp_store().await;
+        let mut chain = AuditChain::new();
+        chain.append(sample_event(0));
+        let mut forged = chain.records()[0].clone();
+        forged.hash = Sha256Digest::from_bytes([0; 32]);
+
+        assert!(store.insert_audit_record(&forged).await.is_err());
+        assert!(store.load_audit_chain().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
     async fn tampered_row_fails_reloaded_verification() {
         let (store, _dir) = temp_store().await;
 
@@ -1733,6 +1768,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn corruption_before_the_audit_tip_blocks_mutation() {
+        let (store, _dir) = temp_store().await;
+        let mut chain = AuditChain::new();
+        for i in 0..3 {
+            chain.append(sample_event(i));
+        }
+        for record in chain.records() {
+            store.insert_audit_record(record).await.unwrap();
+        }
+        sqlx::query("UPDATE audit_log SET summary = ? WHERE seq = ?")
+            .bind("forged history")
+            .bind(0_i64)
+            .execute(&store.pool)
+            .await
+            .unwrap();
+
+        assert!(store
+            .register_target(&sample_target("blocked", "/srv/blocked"), T0)
+            .await
+            .is_err());
+        let targets: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM targets")
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+        assert_eq!(targets, 0, "corrupt audit history rolls back the mutation");
+    }
+
+    #[tokio::test]
     async fn integer_boundaries_and_negative_audit_state_fail_closed() {
         let (store, _dir) = temp_store().await;
         assert!(store
@@ -1759,7 +1822,7 @@ mod tests {
             .fetch_one(&store.pool)
             .await
             .unwrap();
-        assert_eq!(targets, 0, "corrupt audit tip rolls back the mutation");
+        assert_eq!(targets, 0, "corrupt audit history rolls back the mutation");
     }
 
     #[tokio::test]
