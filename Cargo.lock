@@ -44,11 +44,30 @@ version = "0.1.0"
 dependencies = [
  "bar-core",
  "sha2 0.11.0",
+ "tempfile",
 ]
 
 [[package]]
 name = "bar-bench"
 version = "0.1.0"
+
+[[package]]
+name = "bar-cli"
+version = "0.1.0"
+dependencies = [
+ "bar-audit",
+ "bar-contract",
+ "bar-core",
+ "bar-discovery",
+ "bar-findings",
+ "bar-static",
+ "bar-store",
+ "bar-target",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
 
 [[package]]
 name = "bar-config"
@@ -103,6 +122,7 @@ name = "bar-discovery"
 version = "0.1.0"
 dependencies = [
  "bar-core",
+ "rustix",
  "sha2 0.11.0",
  "tempfile",
 ]
@@ -114,6 +134,7 @@ dependencies = [
  "bar-contract",
  "bar-core",
  "bar-coverage",
+ "bar-static",
  "sha2 0.11.0",
 ]
 
@@ -1227,8 +1248,6 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "sqlx-core",
- "sqlx-mysql",
- "sqlx-postgres",
  "sqlx-sqlite",
  "syn",
  "thiserror",

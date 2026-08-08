@@ -2,16 +2,22 @@
 
 Living status of the Behavioral Assurance Runtime build. Newest first.
 
-## Current phase: 7 — Static finding engine (started)
+## Current phase: 8 — Dashboard v1 (started)
 
-Phase 6 implementation is complete (contracts map to code/tests/config, authority
-and state traceability, immutable evidence-level-enforced proof obligations, and
-`Pinned`/`ReferenceStable` freshness); its completion record is
-[`docs/phase-evidence/phase-6.md`](docs/phase-evidence/phase-6.md), and human
-review of it and Phase 5's
-[`docs/phase-evidence/phase-5.md`](docs/phase-evidence/phase-5.md) is pending.
+Phase 7 implementation is complete; its completion record is
+[`docs/phase-evidence/phase-7.md`](docs/phase-evidence/phase-7.md). Human review
+of Phases 5–7 remains pending.
 
-### Phase 7 started
+### Phase 8 started
+
+- `bar serve <report.json>` provides the first read-only operator view: target
+  identity, inventory/contract/finding counts, source-bound static findings, and
+  the underlying versioned JSON. Browser smoke coverage verifies the rendered
+  dashboard, JSON endpoint, console, and responsive layout. Adjudication,
+  inventory/evidence drill-down, and direct database-backed views remain Phase 8
+  work.
+
+### Phase 7 delivered
 
 - `bar-findings` promotes detector **candidates** into durable, aggregated
   **findings**. A candidate's fingerprint embeds the revision-scoped
@@ -85,13 +91,27 @@ review of it and Phase 5's
   not a definitive label. Glossary ambiguities have no upstream ruling touchpoint
   (rulings are contract-claim scoped), so this finding is their first disposition
   path; wiring findings to versioned rulings is deferred with the waiver lifecycle.
-- All three aggregated finding loaders revalidate that their first- and
+- The remaining static detector classes run conservatively over validated,
+  artifact-bound facts: `dead_mechanism` reports functions with no certain
+  in-scope caller; `bypass_path` reports direct effects without a same-symbol
+  authority check; `state_machine_violation` reports transitions following a
+  terminal-state assignment in the same symbol; and `architecture_erosion`
+  reports uncertain call boundaries not explained by a recognized direct
+  effect. Migration `0019` aggregates their revision-independent identities,
+  replays idempotently, and retains audited false-positive corrections. These
+  findings remain provisional because static analysis cannot establish live
+  reachability or deployment policy.
+- `bar-cli` connects registration, inventory, contract analysis, static facts,
+  traceability, and every Phase 7 detector through `bar scan`. It emits versioned
+  JSON or Markdown and serves JSON through a read-only local dashboard.
+  `fixtures/bar-demo` is the clean-install-to-report reference fixture and
+  exercises all seven implemented finding classes.
+- All aggregated finding loaders revalidate that their first- and
   last-seen revisions belong to the finding's target. A valid revision from a
   different target is treated as corrupt provenance rather than crossing the
   target-isolation boundary.
-- Full waiver lifecycle (approval, expiry → reopen, §12.6), the remaining detector
-  classes (dead path, bypass, state, architecture erosion), and the finding
-  dependency graph (§12.4) remain Phase 7 work.
+- Full waiver lifecycle belongs to Phase 14; the finding dependency graph belongs
+  to Phase 10. Neither is claimed as Phase 7 implementation.
 
 ### Cross-phase hardening
 
@@ -100,8 +120,18 @@ review of it and Phase 5's
   blocks and rolls back the state mutation. Standalone audit inserts must also
   extend the verified sequence with the expected predecessor and content hash.
 - `AuditChain::verify_against_checkpoint` accepts an externally retained length
-  and tip to detect deletion from the end of an otherwise valid chain. Durable
-  checkpoint storage remains future work and is documented as such.
+  and tip to detect deletion from the end of an otherwise valid chain.
+  `AuditCheckpoint` now atomically persists a versioned length/tip trust anchor;
+  `bar scan --checkpoint` verifies the current chain extends the retained prefix
+  before mutation and refreshes it after a successful scan.
+- Unix artifact reads now traverse from an open target directory descriptor with
+  `NOFOLLOW` on every component, closing the canonicalize-then-open replacement
+  race. Non-Unix platforms retain canonical containment plus size/digest checks.
+- Audit persistence moved from the store root into `audit_store.rs`, reducing the
+  main store hotspot without changing transaction or validation behavior.
+- CI now checks the declared Rust 1.94 MSRV, denies rustdoc warnings, and runs
+  `cargo audit --deny warnings`. A deterministic arbitrary-input parser
+  regression also exposed and fixed an all-whitespace-line slicing panic.
 - The implemented relational backend is described consistently as SQLite;
   PostgreSQL remains planned, and its unused SQLx feature is no longer enabled.
 - `event-listener` is locked to 5.4.2, resolving the transitive unsoundness
@@ -111,10 +141,14 @@ review of it and Phase 5's
 
 Verified on 2026-08-08:
 
-- `cargo test --workspace --all-targets` — 166 passed, 0 failed.
+- `cargo test --workspace --all-targets` — 175 passed, 0 failed.
 - `cargo clippy --workspace --all-targets -- -D warnings` — clean.
 - `cargo fmt --all -- --check` — clean.
-- `cargo audit` — no advisories reported.
+- `RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps` — clean.
+- `cargo +1.94.0 check --workspace --all-targets --locked` — declared MSRV clean.
+- `cargo audit --deny warnings` — no advisories reported.
+- Playwright dashboard smoke — desktop and 375 px layouts, JSON endpoint, and
+  browser console clean; portfolio screenshot regenerated from `fixtures/bar-demo`.
 
 ### Phase 6 delivered
 
@@ -400,16 +434,13 @@ work.
 
 ### Known repository debt
 
-- Canonicalization and open-time rechecks block stable traversal, symlink, and
-  size-limit escapes, but a concurrently hostile writable target can still race
-  directory entries between resolution and open. Descriptor-relative
-  `openat`/no-follow traversal is required before BAR claims race-resistant
-  monitoring of untrusted writable trees.
-- `crates/bar-store/src/lib.rs` remains the primary god-file hotspot: about
-  1,700 production lines plus its in-file test module. Ruling, attestation,
-  and scope-context persistence are isolated in dedicated modules; split audit,
-  target/inventory, and contract persistence in a later behavior-preserving
-  refactor.
+- Descriptor-relative no-follow artifact opening is implemented on Unix. The
+  non-Unix fallback still relies on canonical containment and open-time digest
+  rechecks, so BAR does not yet claim race-resistant monitoring there.
+- `crates/bar-store/src/lib.rs` remains the primary hotspot. Audit, ruling,
+  attestation, scope-context, static-fact, proof, and finding persistence are now
+  isolated; target/inventory and contract persistence remain candidates for a
+  later behavior-preserving split.
 - Resolved 2026-07-15: the SQLx 0.9 upgrade dropped the optional-MySQL `rsa`
   lock entry (`RUSTSEC-2023-0071`). An unqualified `cargo audit` now reports no
   advisories.

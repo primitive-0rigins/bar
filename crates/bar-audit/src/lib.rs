@@ -21,6 +21,8 @@
 //! the hash basis**: `serde_json` output varies with key order, whitespace, and
 //! escaping, which would make historical hashes unstable.
 
+use std::path::Path;
+
 use bar_core::{Error, Result, Sha256Digest};
 use sha2::{Digest, Sha256};
 
@@ -102,6 +104,97 @@ pub struct AuditRecord {
 
 /// The hash the empty chain chains from.
 pub const GENESIS: Sha256Digest = Sha256Digest::from_bytes([0u8; 32]);
+
+/// A compact trust anchor retained separately from the authoritative audit log.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AuditCheckpoint {
+    pub length: usize,
+    pub tip: Sha256Digest,
+}
+
+impl AuditCheckpoint {
+    pub fn from_chain(chain: &AuditChain) -> Result<Self> {
+        chain.verify()?;
+        Ok(Self {
+            length: chain.len(),
+            tip: chain.tip(),
+        })
+    }
+
+    /// Loads the closed, versioned checkpoint representation.
+    pub fn load(path: &Path) -> Result<Self> {
+        let text = std::fs::read_to_string(path)
+            .map_err(|error| Error::Storage(format!("read audit checkpoint: {error}")))?;
+        let mut lines = text.lines();
+        if lines.next() != Some("bar-audit-checkpoint-v1") {
+            return Err(Error::Corrupt("unknown audit checkpoint format".into()));
+        }
+        let length = lines
+            .next()
+            .and_then(|line| line.strip_prefix("length="))
+            .ok_or_else(|| Error::Corrupt("audit checkpoint has no length".into()))?
+            .parse()
+            .map_err(|_| Error::Corrupt("audit checkpoint length is invalid".into()))?;
+        let tip = lines
+            .next()
+            .and_then(|line| line.strip_prefix("tip="))
+            .ok_or_else(|| Error::Corrupt("audit checkpoint has no tip".into()))?
+            .parse()?;
+        if lines.next().is_some() {
+            return Err(Error::Corrupt(
+                "audit checkpoint contains unexpected fields".into(),
+            ));
+        }
+        Ok(Self { length, tip })
+    }
+
+    /// Atomically writes the checkpoint beside its destination. On Unix the
+    /// new file is owner-readable/writable only.
+    pub fn save(self, path: &Path) -> Result<()> {
+        use std::io::Write;
+
+        let parent = path.parent().unwrap_or_else(|| Path::new("."));
+        std::fs::create_dir_all(parent)
+            .map_err(|error| Error::Storage(format!("create checkpoint directory: {error}")))?;
+        let file_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| Error::Config("audit checkpoint path has no file name".into()))?;
+        let temporary = parent.join(format!(".{file_name}.tmp-{}", std::process::id()));
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let result = (|| {
+            let mut file = options
+                .open(&temporary)
+                .map_err(|error| Error::Storage(format!("create audit checkpoint: {error}")))?;
+            write!(
+                file,
+                "bar-audit-checkpoint-v1\nlength={}\ntip={}\n",
+                self.length, self.tip
+            )
+            .map_err(|error| Error::Storage(format!("write audit checkpoint: {error}")))?;
+            file.sync_all()
+                .map_err(|error| Error::Storage(format!("sync audit checkpoint: {error}")))?;
+            std::fs::rename(&temporary, path)
+                .map_err(|error| Error::Storage(format!("install audit checkpoint: {error}")))?;
+            Ok(())
+        })();
+        if result.is_err() {
+            let _ = std::fs::remove_file(&temporary);
+        }
+        result
+    }
+
+    pub fn path_exists(path: &Path) -> Result<bool> {
+        path.try_exists()
+            .map_err(|error| Error::Storage(format!("inspect audit checkpoint: {error}")))
+    }
+}
 
 /// Computes the hash a record commits to, over a length-prefixed canonical
 /// encoding of every field. Fixed-width fields are written raw; strings are
@@ -234,6 +327,27 @@ impl AuditChain {
         }
         Ok(())
     }
+
+    /// Verifies that this chain still contains a retained checkpoint as an
+    /// exact prefix while allowing legitimate records appended afterwards.
+    pub fn verify_extends_checkpoint(&self, checkpoint: &AuditCheckpoint) -> Result<()> {
+        self.verify()?;
+        let prefix_tip = match checkpoint.length {
+            0 => GENESIS,
+            length if length <= self.len() => self.records[length - 1].hash,
+            _ => {
+                return Err(Error::Corrupt(
+                    "audit chain is shorter than its external checkpoint".into(),
+                ))
+            }
+        };
+        if prefix_tip != checkpoint.tip {
+            return Err(Error::Corrupt(
+                "audit chain does not extend its external checkpoint".into(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -361,6 +475,23 @@ mod tests {
         assert!(truncated
             .verify_against_checkpoint(expected_len, &expected_tip)
             .is_err());
+    }
+
+    #[test]
+    fn checkpoint_file_round_trips_and_allows_append_only_growth() {
+        let chain = chain_of(3);
+        let checkpoint = AuditCheckpoint::from_chain(&chain).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audit.checkpoint");
+        checkpoint.save(&path).unwrap();
+        assert_eq!(AuditCheckpoint::load(&path).unwrap(), checkpoint);
+
+        let mut extended = AuditChain::from_records(chain.records().to_vec());
+        extended.append(event("later"));
+        extended.verify_extends_checkpoint(&checkpoint).unwrap();
+
+        let truncated = AuditChain::from_records(extended.records()[..2].to_vec());
+        assert!(truncated.verify_extends_checkpoint(&checkpoint).is_err());
     }
 
     #[test]
