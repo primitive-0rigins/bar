@@ -18,20 +18,48 @@ post-change verification.
   hierarchy and conflict adjudication, Rust/Python static architecture facts,
   deterministic contract-to-code traceability, proof obligations with
   revision-freshness policies, revision-bound shadow finding candidates, and
-  replay-safe aggregated missing-implementation, contradiction, and
-  documentation-conflict findings. `cargo test --workspace` exercises all of it.
-- **Awaiting human review** — the Phase 5 static adapter and the Phase 6
-  traceability, proof-obligation, and freshness implementation (completion
-  evidence under `docs/phase-evidence/`).
-- **In progress** — the static finding engine (Phase 7); missing-implementation,
-  contradiction, and documentation-conflict findings are in place, while dead
-  path, bypass, state, and architecture-erosion detectors remain.
+  replay-safe aggregated missing-implementation, contradiction,
+  documentation-conflict, dead-mechanism, bypass-path, state-machine, and
+  architecture-erosion findings. `bar scan` runs the complete static pipeline;
+  `bar serve` presents its report in a read-only dashboard.
+- **Awaiting human review** — completion evidence for Phases 5–7 under
+  `docs/phase-evidence/`.
+- **In progress** — the Phase 8 dashboard; report rendering is implemented,
+  while adjudication and evidence drill-down remain.
 - **Not yet built** — daemon watchers and target scheduling, runtime evidence
   capture, the human-approval workflow, coding-agent handoff, and post-change
   verification.
 
 The build progresses phase by phase through [`docs/spec.md`](docs/spec.md)
 §21; [`STATUS.md`](STATUS.md) records current work and completion evidence.
+
+## Try the complete static pipeline
+
+BAR now includes a deliberately flawed reference runtime. One command inventories
+it, extracts its contracts, maps static evidence, persists an audited analysis,
+and reports provisional findings:
+
+```sh
+cargo run -p bar-cli -- scan fixtures/bar-demo
+```
+
+The report demonstrates missing implementation, opposing contracts, conflicting
+documentation, an unguarded effect path, dead code, a terminal-state reversal,
+and an uncertain architecture boundary. See the checked-in
+[`demo report`](docs/demo-report.md) for the expected shape.
+
+Generate JSON and inspect it in the local read-only dashboard:
+
+```sh
+cargo run -p bar-cli -- scan fixtures/bar-demo --format json --output /tmp/bar-report.json
+cargo run -p bar-cli -- serve /tmp/bar-report.json
+```
+
+The scanner never writes into its target. It uses an in-memory database unless
+`--database` is supplied. For tail-deletion protection across durable scans, pass
+an independently stored checkpoint with `--checkpoint /secure/path/bar.checkpoint`.
+
+![BAR read-only findings dashboard](docs/dashboard.png)
 
 ## What it is
 
@@ -44,6 +72,22 @@ target pointer → artifact discovery → contract extraction → hierarchy & ad
 → proof-obligation & coverage → finding & causal investigation → repair-ready contract
 → human approval → coding-agent implementation → pre-merge impact → post-change verification
 → assurance history
+```
+
+```mermaid
+flowchart LR
+    T[Target] --> D[Inventory]
+    D --> C[Source-bound contracts]
+    D --> S[Static facts]
+    C --> X[Traceability]
+    S --> X
+    X --> F[Provisional findings]
+    F --> R[JSON / Markdown report]
+    R --> U[Read-only dashboard]
+    D -. every mutation .-> A[Hash-chained audit]
+    C -. every mutation .-> A
+    F -. every mutation .-> A
+    A --> P[External checkpoint]
 ```
 
 ### Ownership boundary
@@ -91,7 +135,8 @@ bar/
 │   ├── bar-coverage/  # deterministic contract-to-static-fact traceability
 │   ├── bar-findings/  # shadow finding detection and stable aggregation
 │   ├── bar-bench/     # resource benchmark harness (spec §4, §22)
-│   └── bar-daemon/    # the mandatory model-free process (spec §5.1)
+│   ├── bar-daemon/    # the mandatory model-free process (spec §5.1)
+│   └── bar-cli/       # end-to-end scanner, reports, and read-only dashboard
 ├── migrations/        # root SQL migrations, embedded at compile time
 ├── fixtures/          # versioned adversarial and end-to-end test corpora
 ├── docs/              # normative specification and phase evidence
@@ -105,11 +150,16 @@ the tree always builds clean.
 
 ## Build
 
-### Quick start
+### Scanner quick start
+
+```sh
+cargo run -p bar-cli -- scan .
+```
+
+### Daemon bootstrap
 
 BAR currently provides its model-free bootstrap daemon while the remaining
-phases are under construction. From a checkout with a stable Rust toolchain
-(1.85+):
+phases are under construction. From a checkout with Rust 1.94 or newer:
 
 ```sh
 cargo run -p bar-daemon
@@ -189,6 +239,8 @@ unresolved: audit
 cargo test --workspace --all-targets
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all -- --check
+RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps
+cargo audit --deny warnings
 ```
 
 CI runs the same format, lint, and test gates on every pull request. See

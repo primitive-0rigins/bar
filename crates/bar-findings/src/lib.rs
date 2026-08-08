@@ -12,7 +12,258 @@ use bar_core::{ContractId, Error, NormativeKind, Result, Sha256Digest};
 use bar_coverage::{
     explicit_references, validate_contract_traceability, ContractTraceability, UnresolvedReference,
 };
+use bar_static::{StaticArtifactFacts, SymbolKind};
 use sha2::{Digest, Sha256};
+
+/// Conservative architecture-level detector classes completed in Phase 7.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ArchitectureFindingKind {
+    DeadMechanism,
+    BypassPath,
+    StateMachineViolation,
+    ArchitectureErosion,
+}
+
+impl ArchitectureFindingKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::DeadMechanism => "dead_mechanism",
+            Self::BypassPath => "bypass_path",
+            Self::StateMachineViolation => "state_machine_violation",
+            Self::ArchitectureErosion => "architecture_erosion",
+        }
+    }
+
+    pub fn from_token(token: &str) -> Result<Self> {
+        match token {
+            "dead_mechanism" => Ok(Self::DeadMechanism),
+            "bypass_path" => Ok(Self::BypassPath),
+            "state_machine_violation" => Ok(Self::StateMachineViolation),
+            "architecture_erosion" => Ok(Self::ArchitectureErosion),
+            other => Err(Error::Corrupt(format!(
+                "unknown architecture finding kind `{other}`"
+            ))),
+        }
+    }
+}
+
+/// A revision-scoped, source-bound architecture finding candidate. It remains
+/// provisional because static evidence cannot establish runtime reachability.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArchitectureFindingCandidate {
+    pub fingerprint: Sha256Digest,
+    pub kind: ArchitectureFindingKind,
+    pub artifact_id: bar_core::ArtifactId,
+    pub path: String,
+    pub symbol: Option<String>,
+    pub line: u32,
+    pub evidence: String,
+}
+
+/// Runs dead-mechanism, bypass, state-transition, and architecture-erosion
+/// detectors over validated facts. Output is stable across input order.
+pub fn detect_architecture_findings(
+    artifacts: &[StaticArtifactFacts],
+) -> Result<Vec<ArchitectureFindingCandidate>> {
+    let mut findings = BTreeMap::new();
+    for artifact in artifacts {
+        bar_static::validate_static_facts(&artifact.facts)?;
+        let facts = &artifact.facts;
+        let incoming = facts
+            .call_edges
+            .iter()
+            .filter(|edge| !edge.uncertain)
+            .map(|edge| edge.callee.rsplit("::").next().unwrap_or(&edge.callee))
+            .collect::<BTreeSet<_>>();
+        let test_symbols = facts
+            .tests
+            .iter()
+            .map(|test| test.symbol.as_str())
+            .collect::<BTreeSet<_>>();
+        for symbol in facts.symbols.iter().filter(|symbol| {
+            symbol.kind == SymbolKind::Function
+                && symbol.name != "main"
+                && !test_symbols.contains(symbol.name.as_str())
+                && !incoming.contains(symbol.name.as_str())
+        }) {
+            insert_architecture_finding(
+                &mut findings,
+                artifact.artifact_id,
+                ArchitectureFindingKind::DeadMechanism,
+                &symbol.path,
+                Some(&symbol.name),
+                symbol.line,
+                "no certain in-scope caller",
+            );
+        }
+
+        let guarded = facts
+            .authority_checks
+            .iter()
+            .filter_map(|check| check.symbol.as_deref())
+            .collect::<BTreeSet<_>>();
+        for effect in
+            facts.effects.iter().filter(|effect| {
+                effect
+                    .symbol
+                    .as_deref()
+                    .is_some_and(|symbol| !guarded.contains(symbol))
+                    && !effect.symbol.as_deref().is_some_and(|effect_symbol| {
+                        facts.symbols.iter().any(|symbol| {
+                            symbol.name == effect_symbol && symbol.line == effect.line
+                        }) && facts.call_edges.iter().any(|edge| {
+                            !edge.uncertain
+                                && edge.caller == effect_symbol
+                                && facts.symbols.iter().any(|symbol| {
+                                    edge.callee.rsplit("::").next() == Some(symbol.name.as_str())
+                                })
+                        })
+                    })
+            })
+        {
+            insert_architecture_finding(
+                &mut findings,
+                artifact.artifact_id,
+                ArchitectureFindingKind::BypassPath,
+                &effect.path,
+                effect.symbol.as_deref(),
+                effect.line,
+                &format!(
+                    "{:?} effect has no same-symbol authority check",
+                    effect.effect
+                ),
+            );
+        }
+
+        let mut transitions = facts.state_transitions.iter().collect::<Vec<_>>();
+        transitions.sort_by_key(|transition| (transition.symbol.as_deref(), transition.line));
+        let mut terminal_by_symbol = BTreeMap::<Option<&str>, u32>::new();
+        for transition in transitions {
+            let symbol = transition.symbol.as_deref();
+            if terminal_by_symbol.contains_key(&symbol) {
+                insert_architecture_finding(
+                    &mut findings,
+                    artifact.artifact_id,
+                    ArchitectureFindingKind::StateMachineViolation,
+                    &transition.path,
+                    symbol,
+                    transition.line,
+                    "transition follows a terminal state assignment",
+                );
+            }
+            if is_terminal_state(&transition.state) {
+                terminal_by_symbol.insert(symbol, transition.line);
+            }
+        }
+
+        for edge in facts.call_edges.iter().filter(|edge| {
+            edge.uncertain
+                && !facts.effects.iter().any(|effect| {
+                    effect.path == edge.path
+                        && effect.symbol.as_deref() == Some(edge.caller.as_str())
+                        && effect.line == edge.line
+                })
+        }) {
+            insert_architecture_finding(
+                &mut findings,
+                artifact.artifact_id,
+                ArchitectureFindingKind::ArchitectureErosion,
+                &edge.path,
+                Some(&edge.caller),
+                edge.line,
+                &format!("uncertain call boundary to `{}`", edge.callee),
+            );
+        }
+    }
+    Ok(findings.into_values().collect())
+}
+
+/// Revalidates a detector result before it crosses a persistence boundary.
+pub fn validate_architecture_finding_candidate(
+    candidate: &ArchitectureFindingCandidate,
+) -> Result<()> {
+    let path = std::path::Path::new(&candidate.path);
+    if candidate.path.is_empty()
+        || path.is_absolute()
+        || path.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::ParentDir
+                    | std::path::Component::RootDir
+                    | std::path::Component::Prefix(_)
+            )
+        })
+        || candidate.line == 0
+        || candidate.evidence.trim().is_empty()
+        || candidate.symbol.as_deref().is_some_and(str::is_empty)
+    {
+        return Err(Error::Corrupt(
+            "architecture finding has invalid source-bound evidence".into(),
+        ));
+    }
+    let expected = architecture_fingerprint(
+        candidate.kind,
+        &candidate.path,
+        candidate.symbol.as_deref(),
+        candidate.line,
+        &candidate.evidence,
+    );
+    if expected != candidate.fingerprint {
+        return Err(Error::Corrupt(
+            "architecture finding fingerprint does not match its evidence".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn is_terminal_state(state: &str) -> bool {
+    let variant = state
+        .rsplit_once("::")
+        .or_else(|| state.rsplit_once('.'))
+        .map_or(state, |(_, variant)| variant);
+    matches!(
+        variant.to_ascii_lowercase().as_str(),
+        "completed" | "failed" | "cancelled" | "canceled" | "terminated"
+    )
+}
+
+fn insert_architecture_finding(
+    findings: &mut BTreeMap<Sha256Digest, ArchitectureFindingCandidate>,
+    artifact_id: bar_core::ArtifactId,
+    kind: ArchitectureFindingKind,
+    path: &str,
+    symbol: Option<&str>,
+    line: u32,
+    evidence: &str,
+) {
+    let fingerprint = architecture_fingerprint(kind, path, symbol, line, evidence);
+    findings.insert(
+        fingerprint,
+        ArchitectureFindingCandidate {
+            fingerprint,
+            kind,
+            artifact_id,
+            path: path.to_string(),
+            symbol: symbol.map(str::to_string),
+            line,
+            evidence: evidence.to_string(),
+        },
+    );
+}
+
+fn architecture_fingerprint(
+    kind: ArchitectureFindingKind,
+    path: &str,
+    symbol: Option<&str>,
+    _line: u32,
+    evidence: &str,
+) -> Sha256Digest {
+    let mut hasher = Sha256::new();
+    for field in [kind.as_str(), path, symbol.unwrap_or(""), evidence] {
+        hash_part(&mut hasher, field.as_bytes());
+    }
+    Sha256Digest::from_bytes(hasher.finalize().into())
+}
 
 /// A source-bound contract paired with its deterministic traceability result.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -495,10 +746,12 @@ mod tests {
     use bar_contract::{claim_fingerprint, ExtractedClaim, SourceRef};
     use bar_core::{ArtifactId, ContractLevel, NormativeKind, Sha256Digest};
     use bar_coverage::{MappingStatus, TraceTarget, TraceTargetKind, UnresolvedReference};
+    use bar_static::{analyze_artifact, StaticArtifactFacts};
 
     use super::{
-        detect_missing_implementations, promote_candidate, validate_static_finding,
-        validate_static_finding_candidate, ContractTraceability, TraceableContract,
+        detect_architecture_findings, detect_missing_implementations, promote_candidate,
+        validate_static_finding, validate_static_finding_candidate, ArchitectureFindingKind,
+        ContractTraceability, TraceableContract,
     };
 
     fn contract(
@@ -881,5 +1134,34 @@ mod tests {
             super::StaticFindingKind::MissingImplementation
         );
         assert!(super::StaticFindingKind::from_token("forged").is_err());
+    }
+
+    #[test]
+    fn architecture_detectors_cover_dead_bypass_state_and_erosion() {
+        let facts = analyze_artifact(
+            "src/runtime.rs",
+            "enum JobState { Queued, Completed }\n\
+             fn bypass(job: &mut Job) {\n\
+                 std::fs::write(\"ledger\", \"x\");\n\
+                 job.state = JobState::Completed;\n\
+                 job.state = JobState::Queued;\n\
+                 callback.call();\n\
+             }\n\
+             fn main() {}",
+        )
+        .unwrap();
+        let candidates = detect_architecture_findings(&[StaticArtifactFacts {
+            artifact_id: ArtifactId::from_digest(Sha256Digest::from_bytes([7; 32])),
+            facts,
+        }])
+        .unwrap();
+        let kinds = candidates
+            .iter()
+            .map(|candidate| candidate.kind)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert!(kinds.contains(&ArchitectureFindingKind::DeadMechanism));
+        assert!(kinds.contains(&ArchitectureFindingKind::BypassPath));
+        assert!(kinds.contains(&ArchitectureFindingKind::StateMachineViolation));
+        assert!(kinds.contains(&ArchitectureFindingKind::ArchitectureErosion));
     }
 }

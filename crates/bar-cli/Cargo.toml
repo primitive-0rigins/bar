@@ -1,0 +1,32 @@
+[package]
+name = "bar-cli"
+description = "Command-line scanner, reports, and read-only dashboard for the Behavioral Assurance Runtime."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "bar"
+path = "src/main.rs"
+
+[dependencies]
+bar-audit.workspace = true
+bar-contract.workspace = true
+bar-core.workspace = true
+bar-discovery.workspace = true
+bar-findings.workspace = true
+bar-static.workspace = true
+bar-store = { path = "../bar-store" }
+bar-target.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

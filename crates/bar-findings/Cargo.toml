@@ -12,6 +12,7 @@ repository.workspace = true
 bar-contract.workspace = true
 bar-core.workspace = true
 bar-coverage.workspace = true
+bar-static.workspace = true
 sha2.workspace = true
 
 [lints]

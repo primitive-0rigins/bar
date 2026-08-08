@@ -577,7 +577,11 @@ fn push_sentence(
 fn trimmed_bounds(text: &str) -> (usize, usize) {
     let start = text.len() - text.trim_start().len();
     let end = text.trim_end().len();
-    (start, end)
+    if start < end {
+        (start, end)
+    } else {
+        (0, 0)
+    }
 }
 
 fn heading_segment(text: &str) -> Option<(u8, usize, &str)> {
@@ -1227,5 +1231,37 @@ mod tests {
         assert_eq!(corpus.glossary_ambiguities[0].normalized_term, "cache");
         assert_eq!(corpus.glossary_ambiguities[0].sources.len(), 2);
         assert_ne!(corpus.glossary[0].definition, corpus.glossary[1].definition);
+    }
+
+    #[test]
+    fn arbitrary_target_text_never_panics_or_loses_source_validation() {
+        let mut state = 0x9e37_79b9_u32;
+        for case in 0..512 {
+            let length = (state as usize % 384) + 1;
+            let mut text = String::with_capacity(length);
+            for _ in 0..length {
+                state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                let byte = match state % 12 {
+                    0 => b'\n',
+                    1 => b'`',
+                    2 => b'#',
+                    3 => b'<',
+                    _ => b' ' + (state % 95) as u8,
+                };
+                text.push(char::from(byte));
+            }
+            let bytes = Sha256Digest::from_bytes(sha2::Sha256::digest(text.as_bytes()).into());
+            let artifact = ArtifactText::new(
+                ArtifactId::from_digest(bytes),
+                format!("fuzz/{case}.md"),
+                bytes,
+                text,
+            )
+            .unwrap();
+            let analysis = analyze_document(&artifact).unwrap();
+            for claim in analysis.claims {
+                validate_extracted_claim(&claim).unwrap();
+            }
+        }
     }
 }

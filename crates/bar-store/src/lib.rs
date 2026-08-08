@@ -16,7 +16,9 @@
 use std::collections::HashMap;
 use std::str::FromStr;
 
-use bar_audit::{record_hash, AuditCategory, AuditChain, AuditEvent, AuditRecord};
+#[cfg(test)]
+use bar_audit::AuditChain;
+use bar_audit::{AuditCategory, AuditEvent};
 use bar_contract::scope::{validate_declaration, ContractScope, TemporalWindow};
 use bar_contract::{
     glossary_ambiguities, validate_extracted_claim, ConflictCandidate, CorpusAnalysis,
@@ -28,10 +30,12 @@ use bar_core::{
 use bar_discovery::dependency::{validate_logical_path, ArtifactDependency};
 use bar_discovery::{ArtifactKind, DiscoveredArtifact, Inventory, PriorArtifact, PriorInventory};
 use bar_target::{ConnectorKind, ResolvedTarget, RevisionIdentity, TargetStatus};
-use sqlx::sqlite::{Sqlite, SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
-use sqlx::{FromRow, Transaction};
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
+use sqlx::FromRow;
 
+mod architecture_findings;
 mod attestation;
+mod audit_store;
 mod context_resolution;
 mod contradiction_findings;
 mod documentation_conflict_findings;
@@ -42,7 +46,9 @@ mod static_facts;
 mod static_findings;
 mod traceability;
 
+pub use architecture_findings::{ArchitectureFindingPromotion, StoredArchitectureFinding};
 pub use attestation::{ScopeContextAttestationPersistence, StoredScopeContextAttestation};
+pub(crate) use audit_store::append_audit;
 pub use contradiction_findings::{ContradictionPromotion, StoredContradictionFinding};
 pub use documentation_conflict_findings::{
     DocumentationConflictPromotion, StoredDocumentationConflictFinding,
@@ -73,6 +79,7 @@ impl Store {
             .map_err(|e| Error::Storage(format!("invalid database url `{url}`: {e}")))?
             .create_if_missing(true);
         let pool = SqlitePoolOptions::new()
+            .max_connections(if url.contains(":memory:") { 1 } else { 5 })
             .connect_with(options)
             .await
             .map_err(|e| Error::Storage(format!("connect: {e}")))?;
@@ -86,61 +93,6 @@ impl Store {
             .run(&self.pool)
             .await
             .map_err(|e| Error::Storage(format!("migration failed: {e}")))
-    }
-
-    /// Persists a sealed audit record.
-    pub async fn insert_audit_record(&self, record: &AuditRecord) -> Result<()> {
-        let mut tx = self.pool.begin().await.map_err(storage("begin"))?;
-        let chain = load_verified_audit_chain(&mut tx).await?;
-        let expected_seq = u64::try_from(chain.len())
-            .map_err(|_| Error::Corrupt("audit sequence overflow".into()))?;
-        let expected_prev = chain.tip();
-        let expected_hash = record_hash(record.seq, &record.prev_hash, &record.event);
-        if record.seq != expected_seq
-            || record.prev_hash != expected_prev
-            || record.hash != expected_hash
-        {
-            return Err(Error::Corrupt(
-                "audit record does not extend the verified chain".into(),
-            ));
-        }
-
-        let seq = required_sqlite_u64(record.seq, "audit sequence")?;
-        let occurred_at = required_sqlite_u64(record.event.occurred_at_ms, "audit timestamp")?;
-        sqlx::query(
-            "INSERT INTO audit_log \
-             (seq, prev_hash, category, actor, summary, subject, occurred_at_ms, hash) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(seq)
-        .bind(record.prev_hash.to_string())
-        .bind(record.event.category.as_str())
-        .bind(&record.event.actor)
-        .bind(&record.event.summary)
-        .bind(record.event.subject.as_deref())
-        .bind(occurred_at)
-        .bind(record.hash.to_string())
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| Error::Storage(format!("insert audit record: {e}")))?;
-        tx.commit().await.map_err(storage("commit"))?;
-        Ok(())
-    }
-
-    /// Loads the full audit chain in sequence order, preserving stored hashes so
-    /// the result can be re-verified with [`AuditChain::verify`].
-    pub async fn load_audit_chain(&self) -> Result<AuditChain> {
-        let rows: Vec<AuditRow> =
-            sqlx::query_as("SELECT seq, prev_hash, category, actor, summary, subject, occurred_at_ms, hash FROM audit_log ORDER BY seq")
-                .fetch_all(&self.pool)
-                .await
-                .map_err(|e| Error::Storage(format!("load audit chain: {e}")))?;
-
-        let records = rows
-            .into_iter()
-            .map(AuditRow::into_record)
-            .collect::<Result<Vec<_>>>()?;
-        Ok(AuditChain::from_records(records))
     }
 
     /// Registers a resolved target, idempotently on its canonical root locator
@@ -1162,56 +1114,6 @@ fn scan_event(target_id: &TargetId, now_ms: u64, kind: &str, detail: Option<Stri
     }
 }
 
-/// Appends one event to the audit chain inside an open transaction. The complete
-/// persisted chain is verified first so corruption anywhere in authoritative
-/// history blocks the state mutation that owns this transaction.
-async fn append_audit(tx: &mut Transaction<'_, Sqlite>, event: AuditEvent) -> Result<()> {
-    let chain = load_verified_audit_chain(tx).await?;
-
-    let seq =
-        u64::try_from(chain.len()).map_err(|_| Error::Corrupt("audit sequence overflow".into()))?;
-    let prev_hash = chain.tip();
-    let hash = record_hash(seq, &prev_hash, &event);
-
-    sqlx::query(
-        "INSERT INTO audit_log \
-         (seq, prev_hash, category, actor, summary, subject, occurred_at_ms, hash) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-    )
-    .bind(required_sqlite_u64(seq, "audit sequence")?)
-    .bind(prev_hash.to_string())
-    .bind(event.category.as_str())
-    .bind(&event.actor)
-    .bind(&event.summary)
-    .bind(event.subject.as_deref())
-    .bind(required_sqlite_u64(
-        event.occurred_at_ms,
-        "audit timestamp",
-    )?)
-    .bind(hash.to_string())
-    .execute(&mut **tx)
-    .await
-    .map_err(storage("insert audit"))?;
-    Ok(())
-}
-
-async fn load_verified_audit_chain(tx: &mut Transaction<'_, Sqlite>) -> Result<AuditChain> {
-    let rows: Vec<AuditRow> = sqlx::query_as(
-        "SELECT seq, prev_hash, category, actor, summary, subject, occurred_at_ms, hash \
-         FROM audit_log ORDER BY seq",
-    )
-    .fetch_all(&mut **tx)
-    .await
-    .map_err(storage("verify audit history"))?;
-    let records = rows
-        .into_iter()
-        .map(AuditRow::into_record)
-        .collect::<Result<Vec<_>>>()?;
-    let chain = AuditChain::from_records(records);
-    chain.verify()?;
-    Ok(chain)
-}
-
 /// The actor recorded for events BAR originates itself.
 const SYSTEM_ACTOR: &str = "system";
 
@@ -1627,39 +1529,6 @@ impl PersistedArtifactRow {
             && self.source_of_truth == i64::from(artifact.source_of_truth)
             && self.size_bytes == size_bytes
             && self.modified_at_ms == artifact.modified_at_ms
-    }
-}
-
-/// One `audit_log` row. Integer columns are `i64` at the DB boundary (SQLite and
-/// PostgreSQL do not encode `u64`) and are checked on the way out.
-#[derive(FromRow)]
-struct AuditRow {
-    seq: i64,
-    prev_hash: String,
-    category: String,
-    actor: String,
-    summary: String,
-    subject: Option<String>,
-    occurred_at_ms: i64,
-    hash: String,
-}
-
-impl AuditRow {
-    fn into_record(self) -> Result<AuditRecord> {
-        Ok(AuditRecord {
-            seq: u64::try_from(self.seq)
-                .map_err(|_| Error::Corrupt("negative audit sequence".into()))?,
-            prev_hash: Sha256Digest::from_str(&self.prev_hash)?,
-            event: AuditEvent {
-                category: AuditCategory::from_token(&self.category)?,
-                actor: self.actor,
-                summary: self.summary,
-                subject: self.subject,
-                occurred_at_ms: u64::try_from(self.occurred_at_ms)
-                    .map_err(|_| Error::Corrupt("negative audit timestamp".into()))?,
-            },
-            hash: Sha256Digest::from_str(&self.hash)?,
-        })
     }
 }
 

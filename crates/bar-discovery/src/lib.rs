@@ -279,14 +279,18 @@ fn read_and_hash(
     path: &Path,
     max_file_bytes: u64,
 ) -> std::io::Result<(Vec<u8>, String, u64, Option<i64>)> {
-    let real = std::fs::canonicalize(path)?;
-    if !real.starts_with(root) {
-        return Err(std::io::Error::new(
+    let logical = path.strip_prefix(root).map_err(|_| {
+        std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
             "file escapes target root",
-        ));
-    }
-    let mut file = std::fs::File::open(real)?;
+        )
+    })?;
+    let logical = logical
+        .to_str()
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "path is not UTF-8"))?;
+    dependency::validate_logical_path(logical)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    let mut file = open_beneath(root, logical)?;
     let metadata = file.metadata()?;
     if !metadata.is_file() || metadata.len() > max_file_bytes {
         return Err(std::io::Error::new(
@@ -351,19 +355,7 @@ pub fn read_artifact(
             "artifact exceeds static-analysis size limit".into(),
         ));
     }
-    let real = std::fs::canonicalize(root.join(&artifact.logical_path)).map_err(|error| {
-        bar_core::Error::Target(format!(
-            "cannot resolve artifact {}: {error}",
-            artifact.logical_path
-        ))
-    })?;
-    if !real.starts_with(&root) {
-        return Err(bar_core::Error::Target(format!(
-            "artifact {} escapes target root",
-            artifact.logical_path
-        )));
-    }
-    let file = std::fs::File::open(real)
+    let file = open_beneath(&root, &artifact.logical_path)
         .map_err(|error| bar_core::Error::Target(format!("open artifact: {error}")))?;
     let metadata = file
         .metadata()
@@ -389,6 +381,61 @@ pub fn read_artifact(
         ));
     }
     Ok(bytes)
+}
+
+/// Opens a logical path relative to an already-open target directory, refusing
+/// symlinks in every component. On Unix this removes the canonicalize-then-open
+/// race: a hostile target cannot replace a checked component before the open.
+#[cfg(unix)]
+fn open_beneath(root: &Path, logical_path: &str) -> std::io::Result<std::fs::File> {
+    use rustix::fs::{open, openat, Mode, OFlags};
+
+    let mut components = Path::new(logical_path).components().peekable();
+    let mut directory = open(
+        root,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+        Mode::empty(),
+    )?;
+    while let Some(component) = components.next() {
+        let std::path::Component::Normal(name) = component else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "logical path contains a non-normal component",
+            ));
+        };
+        let last = components.peek().is_none();
+        let flags = OFlags::RDONLY
+            | OFlags::CLOEXEC
+            | OFlags::NOFOLLOW
+            | if last {
+                OFlags::empty()
+            } else {
+                OFlags::DIRECTORY
+            };
+        let opened = openat(&directory, name, flags, Mode::empty())?;
+        if last {
+            return Ok(opened.into());
+        }
+        directory = opened;
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::InvalidInput,
+        "logical path is empty",
+    ))
+}
+
+/// Non-Unix fallback retains canonical containment and open-time metadata and
+/// digest rechecks. Descriptor-relative traversal is currently Unix-only.
+#[cfg(not(unix))]
+fn open_beneath(root: &Path, logical_path: &str) -> std::io::Result<std::fs::File> {
+    let real = std::fs::canonicalize(root.join(logical_path))?;
+    if !real.starts_with(root) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "file escapes target root",
+        ));
+    }
+    std::fs::File::open(real)
 }
 
 /// Builds a [`PriorInventory`] from a resulting [`Inventory`] — the shape the
